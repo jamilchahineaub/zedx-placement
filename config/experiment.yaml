@@ -1,0 +1,35 @@
+heights_m:    [1.0, 1.5, 2.0, 2.5]
+azimuths_deg: [0, 30, 60, 90, 120, 150]
+radii_m:      [1.5, 2.5, 3.5]
+
+cam_a:
+  position:   [-2.5, 0.0, 1.5]
+  serial:     1001
+  port:       30000
+
+cam_b:
+  serial:     1002
+  port:       30002
+
+subject_positions:
+  - name: center
+    pos:  [0.0, 0.0, 0.0]
+  - name: corner_near_A
+    pos:  [-1.5, -1.5, 0.0]
+  - name: corner_far
+    pos:  [1.5, 1.5, 0.0]
+  - name: wall_mid
+    pos:  [0.0, -2.0, 0.0]
+
+scene_type:         simple_room
+room_size_m:        [6.0, 6.0, 3.0]
+episode_duration_s: 30
+
+zed_x:
+  fov_h_deg:    110.0
+  fov_v_deg:     70.0
+  min_range_m:    0.3
+  max_range_m:   10.0
+
+triangulable_min_deg: 40
+triangulable_max_deg: 140

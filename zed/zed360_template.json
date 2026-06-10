@@ -1,0 +1,46 @@
+{
+    "1001": {
+        "FusionConfiguration": {
+            "communication_parameters": {
+                "CommunicationParameters": {
+                    "communication_type": "LOCAL NETWORK",
+                    "ip_add": "",
+                    "ip_port": 30010
+                }
+            },
+            "input_type": {
+                "InputType": {
+                    "input_type_conf": "127.0.0.1:30000",
+                    "input_type_conf_right": "0",
+                    "input_type_input": "STREAM",
+                    "input_virtual_serial_number": 0
+                }
+            },
+            "override_gravity": false,
+            "pose": "1.000000 0.000000 0.000000 0.000000 0.000000 1.000000 0.000000 0.000000 0.000000 0.000000 1.000000 0.000000 0.000000 0.000000 0.000000 1.000000",
+            "serial_number": 1001
+        }
+    },
+    "1002": {
+        "FusionConfiguration": {
+            "communication_parameters": {
+                "CommunicationParameters": {
+                    "communication_type": "LOCAL NETWORK",
+                    "ip_add": "",
+                    "ip_port": 30012
+                }
+            },
+            "input_type": {
+                "InputType": {
+                    "input_type_conf": "127.0.0.1:30002",
+                    "input_type_conf_right": "0",
+                    "input_type_input": "STREAM",
+                    "input_virtual_serial_number": 0
+                }
+            },
+            "override_gravity": false,
+            "pose": "1.000000 0.000000 0.000000 0.000000 0.000000 1.000000 0.000000 0.000000 0.000000 0.000000 1.000000 0.000000 0.000000 0.000000 0.000000 1.000000",
+            "serial_number": 1002
+        }
+    }
+}

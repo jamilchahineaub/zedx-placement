@@ -1,0 +1,5 @@
+# Fill these in with your actual paths
+isaac_python:   /path/to/isaacsim/python.sh
+zed_python:     python3
+zed_ext_path:   /path/to/zed-isaac-sim/exts
+headless:       false
