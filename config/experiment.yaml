@@ -1,15 +1,22 @@
-heights_m:    [1.0, 1.5, 2.0, 2.5]
-azimuths_deg: [0, 30, 60, 90, 120, 150]
-radii_m:      [1.5, 2.5, 3.5]
+# Sweep grid
+# Both cameras always same height and radius
+# Cam A fixed at azimuth 0 degrees, cam B at relative azimuth from A
+
+heights_m:         [1.5, 2.0, 2.5, 3.0, 3.5, 4.0, 4.5, 5.0]
+radii_m:           [1.5, 2.0, 2.5, 3.0, 3.5, 4.0, 4.5, 5.0]
+relative_azimuths: [30, 60, 90, 120, 150, 180]
+
+max_tilt_deg: 40.0
+aim_height_m: 1.0
 
 cam_a:
-  position:   [-2.5, 0.0, 1.5]
-  serial:     1001
-  port:       30000
+  azimuth_deg: 0
+  serial:      1001
+  port:        30000
 
 cam_b:
-  serial:     1002
-  port:       30002
+  serial: 1002
+  port:   30002
 
 subject_positions:
   - name: center
@@ -22,7 +29,7 @@ subject_positions:
     pos:  [0.0, -2.0, 0.0]
 
 scene_type:         simple_room
-room_size_m:        [6.0, 6.0, 3.0]
+room_size_m:        [6.0, 6.0, 6.0]
 episode_duration_s: 30
 
 zed_x:
