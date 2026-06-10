@@ -3,3 +3,4 @@ results/layouts/fusion_config_*.json
 __pycache__/
 *.pyc
 .DS_Store
+results/layouts/fusion_config_test.json
