@@ -11,7 +11,10 @@ zed/zed360_template.json, zed/generate_fusion_template.py, zed/make_fusion_confi
 - ZED Python:           python3 (system, pyzed installed)
 - ZED ext folder:       /home/jimmy/zed-isaac-sim/exts
 - ZED SDK version:      5.3.1
-- ZED Helper node type: FILL_FROM_USD_GREP (first task is to find this)
+- ZED Helper node type: sl.sensor.camera.ZED_Camera  (typeVersion 2; uiName "ZED Camera Helper")
+                          # 2-cam port-based node. No serial field — cams differ by
+                          # streamingPort(30000/30002)+cameraPrim. Attrs in experiment.yaml
+                          # under zed_helper_attrs. Stream cfg: HD1080 @ 30fps (zed_stream).
 - Reference scene:      /home/jimmy/Desktop/jimmyNYUL/test.usd (DO NOT MODIFY)
 - Repo root:            /home/jimmy/zedx-placement
 
@@ -22,12 +25,27 @@ zed/zed360_template.json, zed/generate_fusion_template.py, zed/make_fusion_confi
              imports: pyzed.sl only
 - analysis/, sweep.py → python3, no special imports
 
-## Coordinate system — non-negotiable
-Everything is right-handed Z-up, metres.
-In ALL pyzed code:
-    init.coordinate_system = sl.COORDINATE_SYSTEM.RIGHT_HANDED_Z_UP
-    init.coordinate_units  = sl.UNIT.METER
-Never use Y_UP.
+## Coordinate system — non-negotiable (CORRECTED 2026-06-11)
+Two frames. Do not mix them up.
+
+Isaac side (scene_builder, gt_logger, camera_rig): RIGHT_HANDED_Z_UP, metres.
+
+ZED SDK side (pyzed init, fusion config poses): RIGHT_HANDED_Y_UP, metres.
+  This matches the official multi-camera body-tracking sample
+  (/usr/local/zed/samples/body tracking/multi-camera/python/fused_cameras.py),
+  which reads BOTH capture and fusion with sl.COORDINATE_SYSTEM.RIGHT_HANDED_Y_UP.
+  In ALL pyzed code (zed_single.py, zed_fusion.py):
+      init.coordinate_system = sl.COORDINATE_SYSTEM.RIGHT_HANDED_Y_UP
+      init.coordinate_units  = sl.UNIT.METER
+
+make_fusion_config.py converts Isaac Z-up poses to ZED Y-up before writing the
+fusion 'pose' (4x4). Permutation P(x,y,z) = (-y,-z,x):
+    ZED translation = (-isaac_y, -isaac_z, isaac_x)
+    ZED rotation    = P R Pᵀ      (R must be a PROPER rotation, det +1)
+This matches scripts/convert_isaac_pose_to_zed_fusion.py in the zed-isaac-sim repo.
+NOTE: camera_rig.rotation_matrix_from_look_at returns a row-basis (det -1) matrix —
+fine for direction math, but make_fusion_config.proper_rotation_world_from_cam()
+rebuilds a proper (det +1) rotation before conversion.
 
 ## Headless flag
 laptop → headless: false  (user watches viewport, sees cameras moving)

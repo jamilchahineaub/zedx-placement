@@ -32,6 +32,15 @@ scene_type:         simple_room
 room_size_m:        [6.0, 6.0, 6.0]
 episode_duration_s: 30
 
+# Occluders placed by scene_builder.py (toggle to study occlusion robustness).
+occluders:
+  table:  true    # 1 x 2 x 0.8 m box at (1.2, 0, 0.4)
+  pillar: true    # 0.4 m dia, 2 m tall cylinder at (-1.2, 1.0, 1.0)
+
+# Path to the biped character source scene comes from machine.<name>.yaml
+# (reference_scene). character_prim is the prim referenced from it.
+character_prim: /World/biped_demo_meters
+
 zed_x:
   fov_h_deg:    110.0
   fov_v_deg:     70.0
@@ -40,3 +49,28 @@ zed_x:
 
 triangulable_min_deg: 40
 triangulable_max_deg: 140
+
+# --- ZED Camera Helper OmniGraph node (Phase 1, verified from ext .ogn source) ---
+# Node whose uiName is "ZED Camera Helper". 2-cam port-based variant (matches test.usd).
+# Source: exts/sl.sensor.camera/sl/sensor/camera/nodes/SlCameraStreamer.ogn
+# Cameras are distinguished by streamingPort + cameraPrim. This node has NO serial
+# field by design — serials 1001/1002 live only in zed/zed360_template.json, paired
+# to ports 30000/30002. Invariant: cam A = port 30000 <-> serial 1001;
+#                                   cam B = port 30002 <-> serial 1002.
+zed_helper_node_type: "sl.sensor.camera.ZED_Camera"
+zed_helper_node_type_version: 2
+
+zed_stream:
+  resolution: "HD1080"   # processing res (node default is HD1200)
+  fps:        30          # processing fps (node default is 60)
+  transport:  "BOTH"      # BOTH | NETWORK | IPC  (IPC = same machine, Linux only)
+
+# Exact OmniGraph attribute names on the ZED_Camera node (verified, do NOT guess).
+zed_helper_attrs:
+  exec_in:     "inputs:execIn"          # execution pin, from OnPlaybackTick
+  camera_prim: "inputs:cameraPrim"      # type 'target' — set as USD relationship to the ZED prim
+  port:        "inputs:streamingPort"   # uint, unique per camera
+  model:       "inputs:cameraModel"     # token, default ZED_X
+  resolution:  "inputs:resolution"      # token: HD1200 | HD1080 | SVGA
+  fps:         "inputs:fps"             # uint
+  transport:   "inputs:transportLayerMode"  # token: BOTH | NETWORK | IPC

@@ -1,5 +1,5 @@
-# Fill these in with your actual paths
-isaac_python:   /path/to/isaacsim/python.sh
-zed_python:     python3
-zed_ext_path:   /path/to/zed-isaac-sim/exts
-headless:       false
+isaac_python:    /home/jimmy/isaacsim/python.sh
+zed_python:      python3
+zed_ext_path:    /home/jimmy/zed-isaac-sim/exts
+reference_scene: /home/jimmy/Desktop/jimmyNYUL/test.usd   # source of /World/biped_demo_meters
+headless:        false
