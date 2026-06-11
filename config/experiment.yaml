@@ -63,7 +63,7 @@ zed_helper_node_type_version: 2
 zed_stream:
   resolution: "HD1080"   # processing res (node default is HD1200)
   fps:        30          # processing fps (node default is 60)
-  transport:  "BOTH"      # BOTH | NETWORK | IPC  (IPC = same machine, Linux only)
+  transport:  "BOTH"      # BOTH | NETWORK | IPC  (IPC = same machine, Linux only; SDK auto-uses SHM when BOTH/IPC)
 
 # Exact OmniGraph attribute names on the ZED_Camera node (verified, do NOT guess).
 zed_helper_attrs:

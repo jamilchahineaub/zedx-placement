@@ -48,10 +48,36 @@ def _subject_pos(subject_name, cfg):
 
 
 def _rotmat_to_wxyz(R):
-    """3x3 proper rotation (list of rows) -> (w,x,y,z) quaternion for create_prim."""
-    import numpy as np
-    from isaacsim.core.utils.rotations import rot_matrix_to_quat
-    return rot_matrix_to_quat(np.array(R, dtype=float))
+    """
+    Convert camera_rig look-at matrix (rows: right, up, forward) to Isaac wxyz quaternion.
+
+    Isaac default camera looks down +X. To aim it toward an arbitrary target:
+      1. yaw   around world-Z to face the horizontal direction of forward
+      2. pitch around local-Y to tilt up/down
+
+    We extract yaw and pitch from the forward vector directly and build the
+    quaternion as Rz(yaw) * Ry(pitch) — no intermediate rot_matrix_to_quat needed.
+    """
+    import math
+    forward = R[2]  # (fx, fy, fz) — unit vector toward target
+    fx, fy, fz = forward
+
+    yaw = math.atan2(fy, fx)  # horizontal angle from +X
+
+    # Ry(pitch) applied to local +X gives z-component = -sin(pitch), so to get
+    # forward.z == fz we need pitch = asin(-fz). (positive pitch = tilt down)
+    pitch = math.asin(max(-1.0, min(1.0, -fz)))
+
+    # Quaternion for Rz(yaw) * Ry(pitch) — intrinsic ZY rotations
+    cy, sy = math.cos(yaw/2),   math.sin(yaw/2)
+    cp, sp = math.cos(pitch/2), math.sin(pitch/2)
+
+    # Rz then Ry: q = qz * qy, where qz=(cy,0,0,sy), qy=(cp,0,sp,0) in (w,x,y,z)
+    qw = cy*cp
+    qx = -sy*sp
+    qy = cy*sp
+    qz = sy*cp
+    return (qw, qx, qy, qz)
 
 
 # ---------------------------------------------------------------------------
@@ -150,11 +176,44 @@ def _load_character(stage, cfg, machine_cfg, subject_pos):
                     attributes={"radius": 0.25, "height": 1.3})
         return char_dst_prim
 
-    # add_reference_to_stage references the WHOLE test.usd at the dst prim. To pull a
-    # specific source prim we add the reference then (if needed) target its default
-    # prim. test.usd's biped is the animated content; referencing the file root and
-    # repathing to subject is sufficient for the experiment.
+    # add_reference_to_stage references the WHOLE test.usd at the dst prim, which
+    # drags in everything authored in it (the character, plus whatever cameras /
+    # ActionGraphs / environment geometry the scene was last saved with — the
+    # user re-saves test.usd from their own sessions, so the content drifts).
+    # Those are referenced opinions, so RemovePrim() won't work on the composed
+    # stage. Instead: KEEP only the subtree(s) that contain a skeleton (the
+    # character) and deactivate every other child on the session layer (session
+    # opinions are strongest; the reference file is never modified).
+    #
+    # This is critical for streaming: a leftover ActionGraph with ZED helper
+    # nodes inside test.usd would bind ports 30000/30002 and fight our two
+    # ZEDAnnotators ("Error during zed streamer initialization" loop).
     add_reference_to_stage(usd_path=ref_scene, prim_path=char_dst_prim)
+
+    from pxr import Usd as _Usd, UsdSkel as _UsdSkel
+    root = stage.GetPrimAtPath(char_dst_prim)
+
+    def _has_skeleton(prim):
+        for p in _Usd.PrimRange(prim):
+            if p.IsA(_UsdSkel.Root) or p.IsA(_UsdSkel.Skeleton):
+                return True
+        return False
+
+    kept, dropped = [], []
+    session_layer = stage.GetSessionLayer()
+    for child in root.GetChildren():
+        if _has_skeleton(child):
+            kept.append(str(child.GetPath()))
+        else:
+            with _Usd.EditContext(stage, session_layer):
+                child.SetActive(False)
+            dropped.append(str(child.GetPath()))
+
+    print(f"scene_builder: kept {kept}, deactivated {len(dropped)} test.usd prim(s): "
+          f"{[p.split('/')[-1] for p in dropped]}")
+    if not kept:
+        print("RUN_FAILED no skeleton subtree under reference — "
+              f"check {ref_scene} still contains the character")
 
     # Place at the subject floor position.
     from pxr import UsdGeom, Gf
@@ -191,7 +250,7 @@ def _zed_x_usd_path(machine_cfg):
 # Public entry point
 # ---------------------------------------------------------------------------
 
-def build_scene(h, r, rel_az, subject_name, cfg, machine_cfg):
+def build_scene(h, r, rel_az, subject_name, cfg, machine_cfg, cams="both"):
     """
     Boot Isaac, build the room, load the character, place two ZED cameras, and start
     streaming via two ZEDAnnotators. Returns (app, stage, annotator_a, annotator_b).
@@ -201,6 +260,9 @@ def build_scene(h, r, rel_az, subject_name, cfg, machine_cfg):
     subject_name: name from experiment.yaml subject_positions
     cfg         : experiment.yaml dict
     machine_cfg : machine.<name>.yaml dict (headless, zed_ext_path, reference_scene)
+    cams        : "both" | "a" | "b" — which annotators to start (diagnostic;
+                  the skipped one is returned as None). Camera prims are always
+                  placed so the scene geometry is identical either way.
     """
     # 1) SimulationApp FIRST, before any omni/isaacsim imports.
     from isaacsim import SimulationApp
@@ -229,6 +291,12 @@ def build_scene(h, r, rel_az, subject_name, cfg, machine_cfg):
     create_prim("/World/Looks", "Scope")
     create_prim("/World/Room", "Xform")
     create_prim("/World/Lights", "Xform")
+
+    # Disable gravity so cameras and character don't fall when timeline plays.
+    from pxr import UsdPhysics, Gf as _Gf
+    scene_prim = create_prim("/World/PhysicsScene", "PhysicsScene")
+    physics_scene = UsdPhysics.Scene.Define(stage, "/World/PhysicsScene")
+    physics_scene.CreateGravityMagnitudeAttr(0.0)
 
     subject_pos = _subject_pos(subject_name, cfg)
 
@@ -266,24 +334,28 @@ def build_scene(h, r, rel_az, subject_name, cfg, machine_cfg):
     prim_a = stage.GetPrimAtPath("/World/ZED_Camera_A")
     prim_b = stage.GetPrimAtPath("/World/ZED_Camera_B")
 
-    annotator_a = ZEDAnnotator(
-        camera_prim=[prim_a.GetPath()],
-        camera_model="ZED_X",
-        streaming_port=cfg["cam_a"]["port"],          # 30000
-        resolution=res,
-        fps=fps,
-        transport_layer_mode=transport,
-        virtual_serial_number=str(cfg["cam_a"]["serial"]),   # "1001"
-    )
-    annotator_b = ZEDAnnotator(
-        camera_prim=[prim_b.GetPath()],
-        camera_model="ZED_X",
-        streaming_port=cfg["cam_b"]["port"],          # 30002
-        resolution=res,
-        fps=fps,
-        transport_layer_mode=transport,
-        virtual_serial_number=str(cfg["cam_b"]["serial"]),   # "1002"
-    )
+    annotator_a = None
+    annotator_b = None
+    if cams in ("both", "a"):
+        annotator_a = ZEDAnnotator(
+            camera_prim=[prim_a.GetPath()],
+            camera_model="ZED_X",
+            streaming_port=cfg["cam_a"]["port"],          # 30000
+            resolution=res,
+            fps=fps,
+            transport_layer_mode=transport,
+            virtual_serial_number=str(cfg["cam_a"]["serial"]),   # "1001"
+        )
+    if cams in ("both", "b"):
+        annotator_b = ZEDAnnotator(
+            camera_prim=[prim_b.GetPath()],
+            camera_model="ZED_X",
+            streaming_port=cfg["cam_b"]["port"],          # 30002
+            resolution=res,
+            fps=fps,
+            transport_layer_mode=transport,
+            virtual_serial_number=str(cfg["cam_b"]["serial"]),   # "1002"
+        )
 
     # 9) Sentinel for sweep.py.
     print("STREAMING_STARTED", flush=True)

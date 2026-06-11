@@ -108,13 +108,95 @@ def is_valid_layout(h, r, cfg):
     return tilt_angle(h, r, aim) < cfg["max_tilt_deg"]
 
 
-def evaluate_layout(h, r, rel_az_deg, subject_pos, cfg):
+def evaluate_layout(h, r, rel_az_deg, subject_pos, cfg,
+                    machine="laptop", layout_id=None, subject_pos_name="center",
+                    episode_duration=240.0, capture_duration=20.0,
+                    mode="fusion"):
     """
     THE SWEEP BOUNDARY. sweep.py calls only this function.
 
-    Will run one full episode (Isaac scene + ZED fusion + metrics) and return a
-    dict of every metric in results.csv. Stubbed until Phase 6.
+    Runs one full episode end-to-end and returns the metrics dict for one
+    results.csv row:
+      preflight -> fusion config -> Isaac episode (streaming) -> ZED receiver
+      (fusion or single) -> analysis/metrics.compute_metrics.
+
+    RUNS UNDER SYSTEM python3 ONLY (it shells out to Isaac python for the
+    episode; never call this from inside Isaac python). All orchestration
+    building blocks live in scripts/run_pipeline.py and analysis/metrics.py —
+    this function only wires them together.
     """
-    raise NotImplementedError(
-        "evaluate_layout not yet implemented — will be filled in Phase 6"
-    )
+    import json
+    import os
+    import subprocess
+    import sys
+
+    repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    for p in (repo, os.path.join(repo, "analysis")):
+        if p not in sys.path:
+            sys.path.insert(0, p)
+    from scripts import run_pipeline
+    from scripts.preflight import load_cfgs, preflight as run_preflight
+    import metrics as metrics_mod
+
+    _, machine_cfg = load_cfgs(machine)
+    if layout_id is None:
+        layout_id = f"h{h}_r{r}_az{int(rel_az_deg)}_{subject_pos_name}"
+
+    if not is_valid_layout(h, r, cfg):
+        raise ValueError(f"invalid layout (tilt >= max_tilt_deg): h={h} r={r}")
+
+    if not run_preflight(cfg, machine_cfg):
+        raise RuntimeError("preflight failed")
+
+    # Fusion config for this layout (needed by zed_fusion + documents poses).
+    fusion_cfg_path = os.path.join(repo, "results", "layouts",
+                                   f"fusion_config_{layout_id}.json")
+    subprocess.run(
+        [machine_cfg.get("zed_python", "python3"),
+         os.path.join(repo, "zed", "make_fusion_config.py"),
+         "--out", fusion_cfg_path, "--h", str(h), "--r", str(r),
+         "--rel-az", str(rel_az_deg),
+         "--subject", " ".join(str(v) for v in subject_pos)],
+        cwd=repo, check=True, capture_output=True, text=True)
+
+    proc, log_path = run_pipeline.launch_isaac(
+        h, r, rel_az_deg, subject_pos_name, layout_id, machine, machine_cfg,
+        episode_duration)
+    try:
+        expected = {cfg["cam_a"]["port"], cfg["cam_b"]["port"]}
+        run_pipeline.wait_for_streaming(log_path, proc, expected)
+
+        if mode == "fusion":
+            res = run_pipeline.run_zed_fusion(
+                fusion_cfg_path, layout_id, machine_cfg,
+                duration=capture_duration,
+                tilt_deg=tilt_angle(h, r, cfg["aim_height_m"]))
+            pred_csv = res["csv"]
+            meta_path = os.path.join(repo, "results", "layouts",
+                                     f"zed_pred_{layout_id}_meta.json")
+        else:
+            res = run_pipeline.run_zed_single(cfg["cam_a"]["port"], layout_id,
+                                              machine_cfg,
+                                              duration=capture_duration)
+            pred_csv = res["csv"]
+            meta_path = os.path.join(repo, "results", "layouts",
+                                     f"zed_single_{layout_id}_meta.json")
+        if res["rc"] != 0 or res["rows"] == 0:
+            raise RuntimeError(f"receiver failed rc={res['rc']} rows={res['rows']}")
+
+        run_pipeline.wait_episode_done(log_path, proc,
+                                       timeout=episode_duration + 60)
+    finally:
+        run_pipeline.shutdown_isaac(proc, log_path, grace=90)
+
+    gt_csv = os.path.join(repo, "results", "layouts",
+                          f"ground_truth_{layout_id}.csv")
+    meta = {}
+    if os.path.exists(meta_path):
+        with open(meta_path) as f:
+            meta = json.load(f)
+
+    return metrics_mod.compute_metrics(
+        gt_csv, pred_csv, meta, h, r, rel_az_deg, cfg,
+        subject_pos=tuple(subject_pos), mode=mode,
+        subject_pos_name=subject_pos_name)

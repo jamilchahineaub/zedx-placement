@@ -95,6 +95,9 @@ def test_valid_layout_shallow():
 # evaluate_layout stub
 # ---------------------------------------------------------------------------
 
-def test_evaluate_layout_is_stub():
-    with pytest.raises(NotImplementedError):
-        cr.evaluate_layout(1.5, 2.5, 90, (0, 0, 0), CFG)
+def test_evaluate_layout_rejects_invalid_layout():
+    # Implemented in Phase 6. The pure-math validity gate fires before any
+    # Isaac/preflight side effects, so an invalid (h, r) must raise ValueError
+    # without touching the system.
+    with pytest.raises(ValueError):
+        cr.evaluate_layout(5.0, 1.5, 90, (0, 0, 0), CFG)  # tilt ~69deg > max 40

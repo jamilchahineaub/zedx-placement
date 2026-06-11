@@ -122,21 +122,47 @@ def proper_rotation_world_from_cam(cam_pos, target_pos):
     ]
 
 
+# IMAGE-frame flip: diag(1, -1, -1). The ZED360 fusion file stores poses in
+# the ZED IMAGE coordinate frame (x right, y DOWN, z FORWARD), and
+# sl.read_fusion_configuration_file(..., RIGHT_HANDED_Y_UP, ...) converts
+# file -> runtime by negating y and z on both the world and camera sides
+# (R_runtime = D R_file D, t_runtime = D t_file). VERIFIED EMPIRICALLY
+# 2026-06-11 by printing conf.pose for a generated file: our translation
+# (0, -1.5, 2.5) was parsed as (0, +1.5, -2.5).
+_D = [
+    [1.0, 0.0, 0.0],
+    [0.0, -1.0, 0.0],
+    [0.0, 0.0, -1.0],
+]
+
+
 def convert_isaac_to_zed_pose(pos, R_world_from_cam):
     """
-    Convert an Isaac Z-up world<-camera pose to the ZED fusion Y-up frame.
+    Convert an Isaac Z-up world<-camera pose into the values the ZED fusion
+    FILE must contain so that the RUNTIME pose (after the SDK's IMAGE->Y_UP
+    file conversion) is (P @ R, P @ t).
+
+    Why (P @ R, P @ t) at runtime and not (P R P^T, P t): fusion applies
+    p_world = R_runtime @ p_cam + t_runtime where p_cam is ALREADY in the ZED
+    Y-up camera frame (x right, y up, z backward) — the same axes convention
+    as R's camera side (columns [right, up, -forward]). Only the WORLD side
+    needs the Isaac->ZED permutation, so the runtime rotation is P @ R (NOT
+    the conjugation P R P^T, which would wrongly permute the camera axes too).
+    Verified empirically 2026-06-11: P @ R maps a measured camera-frame neck
+    onto the ground-truth neck; P R P^T put fused bodies metres off.
 
     pos               : [x, y, z] camera world position (Isaac Z-up, metres)
-    R_world_from_cam  : 3x3 proper rotation (det +1), Isaac Z-up
+    R_world_from_cam  : 3x3 proper rotation (det +1), Isaac Z-up,
+                        columns [right, up, -forward]
 
-    Returns (zed_pos, zed_R):
-      zed_pos = (-y, -z, x)
-      zed_R   = P R P^T
-    Both remain a valid rigid transform (det +1) in Y-up.
+    Returns (file_pos, file_R) to be written into the 4x4 pose string:
+      file_R   = D @ (P @ R) @ D     (D = diag(1,-1,-1), IMAGE-frame storage)
+      file_pos = D @ P @ pos = (-y, z, -x)
     """
-    zed_pos = [-pos[1], -pos[2], pos[0]]
-    zed_R = _matmul3(_matmul3(_P, R_world_from_cam), _transpose3(_P))
-    return zed_pos, zed_R
+    runtime_R = _matmul3(_P, R_world_from_cam)            # P @ R
+    file_R = _matmul3(_matmul3(_D, runtime_R), _D)        # D (P R) D
+    file_pos = [-pos[1], pos[2], -pos[0]]                 # D P t
+    return file_pos, file_R
 
 
 def make_pose_string(pos, R):
@@ -179,17 +205,28 @@ def generate(template_path, out_path, h, r, rel_az_deg,
     with open(template_path) as f:
         cfg = json.load(f)
 
-    aim_point = [subject_pos[0], subject_pos[1], subject_pos[2] + aim_height_m]
+    # DOUBLED-PITCH poses — empirical calibration against the Isaac virtual
+    # cameras (2026-06-11, four controlled runs at tilt 11.3deg / r 2.5):
+    # fusion applies pitch = file_pitch + tilt (linear, slope 1):
+    #     file pitch -tilt  -> applied 0      -> +sin(tilt)*range offset (0.48m)
+    #     file pitch  0     -> applied +tilt  -> double offset (0.96m)
+    # (initial_world_transform on the senders is ignored for stream input, and
+    # override_gravity / enable_imu_fusion change nothing — the +tilt addition
+    # comes from the SDK reconciling the pose with the virtual IMU's "level"
+    # gravity.) To get applied = -tilt, write pitch = -2*tilt: aim at the
+    # mirror of the real aim point through the camera's horizontal plane.
+    def _doubled_aim(pos):
+        real_aim_z = subject_pos[2] + aim_height_m
+        return [subject_pos[0], subject_pos[1], pos[2] - 2.0 * (pos[2] - real_aim_z)]
 
-    # Camera A — build a proper (det +1) Isaac Z-up pose, then convert to ZED Y-up.
     pos_a = camera_position(cam_a_az, r, h, subject_pos)
-    R_a   = proper_rotation_world_from_cam(pos_a, aim_point)
+    R_a   = proper_rotation_world_from_cam(pos_a, _doubled_aim(pos_a))
     zpos_a, zR_a = convert_isaac_to_zed_pose(pos_a, R_a)
     cfg["1001"]["FusionConfiguration"]["pose"] = make_pose_string(zpos_a, zR_a)
 
     # Camera B
     pos_b = camera_position(cam_a_az + rel_az_deg, r, h, subject_pos)
-    R_b   = proper_rotation_world_from_cam(pos_b, aim_point)
+    R_b   = proper_rotation_world_from_cam(pos_b, _doubled_aim(pos_b))
     zpos_b, zR_b = convert_isaac_to_zed_pose(pos_b, R_b)
     cfg["1002"]["FusionConfiguration"]["pose"] = make_pose_string(zpos_b, zR_b)
 

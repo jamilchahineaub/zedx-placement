@@ -41,11 +41,19 @@ def main():
     ap.add_argument("--duration", type=float, default=30.0, help="episode seconds")
     ap.add_argument("--layout-id", required=True, help="string id for output filenames")
     ap.add_argument("--machine", default="laptop", help="laptop | 4090")
+    ap.add_argument("--cams", choices=["both", "a", "b"], default="both",
+                    help="which ZED annotators to start (diagnostic: 'a' forces a "
+                         "single streamer so streamer ID 0 lands on cam A's port)")
+    ap.add_argument("--transport", choices=["BOTH", "NETWORK", "IPC"], default=None,
+                    help="override zed_stream.transport from experiment.yaml")
     args = ap.parse_args()
 
     # 1) Config
     cfg = load_yaml(os.path.join(REPO, "config", "experiment.yaml"))
     machine_cfg = load_yaml(os.path.join(REPO, "config", f"machine.{args.machine}.yaml"))
+    if args.transport:
+        cfg.setdefault("zed_stream", {})["transport"] = args.transport
+        print(f"run_episode: transport override -> {args.transport}")
 
     # 2) Validity gate (pure math, no Isaac needed) — do it BEFORE booting Isaac.
     import camera_rig
@@ -58,7 +66,8 @@ def main():
     import scene_builder
     try:
         app, stage, annotator_a, annotator_b = scene_builder.build_scene(
-            args.h, args.r, args.rel_az, args.subject_name, cfg, machine_cfg
+            args.h, args.r, args.rel_az, args.subject_name, cfg, machine_cfg,
+            cams=args.cams,
         )
     except Exception as e:
         print(f"RUN_FAILED build_scene raised: {e}")
@@ -95,7 +104,9 @@ def main():
         print(f"RUN_FAILED tick loop raised: {e}")
         timeline.stop()
         try:
-            annotator_a.destroy(); annotator_b.destroy()
+            for ann in (annotator_a, annotator_b):
+                if ann is not None:
+                    ann.destroy()
         finally:
             app.close()
         raise
@@ -111,8 +122,9 @@ def main():
 
     # 10) Cleanup annotators, 11) close app
     try:
-        annotator_a.destroy()
-        annotator_b.destroy()
+        for ann in (annotator_a, annotator_b):
+            if ann is not None:
+                ann.destroy()
     finally:
         app.close()
 

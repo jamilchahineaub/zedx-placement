@@ -1,5 +1,97 @@
 # ZED-X Placement Experiment — Handoff
-**Last updated:** 2026-06-11 (end of Phase 5)
+**Last updated:** 2026-06-11 (Phase 6, session 3 — STREAMING + DETECTION + FUSION POSES FIXED)
+
+---
+
+## ⚡ SESSION 3 (2026-06-11 afternoon) — the 2-hour sprint
+
+**One command now runs the whole pipeline:**
+```bash
+python3 scripts/run_pipeline.py --h 1.5 --r 2.5 --rel-az 90 --subject-name center \
+  --layout-id my_run --machine laptop --mode both
+# -> PREFLIGHT_OK -> STREAMING_STARTED -> ZED_SINGLE_READY -> FUSION_READY -> PIPELINE_OK
+```
+
+### Issue C — ROOT-CAUSED AND FIXED (0 frames on port 30000)
+Three stacked problems, all fixed:
+1. **Stale machine state**: zombie receivers/crashed runs squat UDP 30000-30003 and
+   leave stale `/dev/shm/sl_local_*` topics → receiver misses the SHM topic, falls
+   into the UDP cascade (which can NEVER work locally — the sender holds those
+   ports). Fix: `scripts/preflight.py` (kill stale procs, wait ports free, clean
+   sl_local SHM) runs before every pipeline run.
+2. **Timing**: the receiver must start while Isaac is actively streaming.
+   `scripts/run_pipeline.py` waits for both "Initializing streamer" lines + a 5s
+   no-error grace, then starts the receiver. Result: first frame in **0.1s**.
+3. **zed.open() hangs >2min on a dead stream and is NOT interruptible** — fixed
+   with a SIGALRM hard cap (`--open-timeout`, exit 142) + a first-frame watchdog
+   (`RUN_FAILED stream_dead`, exit 2) so the orchestrator can retry fast.
+
+### Detection — bodies=0 with FAST/conf40, FIXED with ACCURATE/conf20
+On our procedural room rendering, HUMAN_BODY_FAST detects nothing;
+HUMAN_BODY_ACCURATE + conf 20 detects the cop on EVERY frame (verified: 78/78,
+then 147/147). Defaults flipped accordingly (zed_single, zed_fusion,
+run_pipeline). `--save-frame` on zed_single captures what the camera sees
+(verified aim is correct — user's pitch fix works).
+
+### test.usd "warehouse merge" — FIXED with dynamic strip
+test.usd now contains `warehouse_with_forklifts` + a `ZED_X` rig + the cop.
+`scene_builder._load_character` now keeps ONLY subtree(s) containing a
+UsdSkel.Root/Skeleton and session-layer-deactivates everything else — robust to
+whatever test.usd is re-saved with. Log line: `scene_builder: kept [...]`.
+
+### Fusion pose conversion — the old rule was WRONG (both ours and the
+### zed-isaac-sim convert script). Fixed empirically, in three layers.
+Symptom: fused bodies=2 (views never merged), both metres from GT. Found by
+printing `conf.pose` after `read_fusion_configuration_file` and solving against
+real measured camera-frame keypoints (incl. a Kabsch fit of the transform the
+SDK ACTUALLY applied):
+1. Runtime pose fusion applies = **(P @ R, P @ t)** — world-side permutation
+   ONLY (P R Pᵀ also permutes the camera axes; wrong).
+2. The fusion FILE stores poses in the ZED IMAGE frame (y down, z forward);
+   the reader conjugates with D = diag(1,-1,-1) on load. File must contain
+   **D (P R) D** and **t = (-y, z, -x)**.
+3. **Pitch must be written DOUBLED: file pitch = -2*tilt.** Four controlled
+   runs show fusion applies `pitch = file_pitch + tilt` (linear, slope 1) —
+   the SDK adds +tilt while reconciling the pose with the virtual IMU's
+   "camera is level" gravity. Neither `override_gravity` (true/false) nor
+   `enable_imu_fusion=False` nor sender `initial_world_transform` changes
+   this (all tested — initial_world_transform is ignored for stream input).
+   make_fusion_config now aims each camera's file rotation at the MIRROR of
+   the aim point through the camera's horizontal plane (pitch = -2*tilt).
+   **Result: fused MPJPE 112.3 mm** (hips/knees 66-98 mm — fusion recovers
+   the legs that the table occludes from cam A; wrists/elbows 138-205 mm).
+   Inside the 20-200 mm Phase-6 gate. NOTE: the +tilt addition was measured
+   at tilt=11.3deg; if a future SDK/Isaac update changes IMU handling,
+   re-run the 3-point calibration (file pitch -tilt / 0 / -2tilt).
+Also: zed_fusion exits via os._exit right after artifacts are flushed and
+never closes the cameras — the SDK segfaults (rc=-11) closing cameras while
+Fusion is subscribed; process death reclaims everything and preflight cleans
+any residue.
+See CLAUDE.md coordinate section + make_fusion_config.convert_isaac_to_zed_pose.
+
+### What landed (files)
+- NEW `scripts/preflight.py`, `scripts/run_pipeline.py` — cleanup gate + one-command
+  orchestrator (importable building blocks; evaluate_layout uses them).
+- NEW `zed/zed_fusion.py` — dual-cam fusion (mirrors fused_cameras.py; opens both
+  streams in one process, SHM publish/subscribe, subscribes with RUNTIME serials,
+  poses matched by port). FUSION_READY confirmed live.
+- NEW `analysis/joint_map.py` (BODY_18 LEFT_*/RIGHT_* names verified from real CSV
+  → male_adult_police_04 rig) + `analysis/metrics.py` (MPJPE/PCK30/50/coverage/
+  visibility via prescreen on real GT joints; static ⇒ time-averaged skeletons;
+  jitter/id_drops NaN) + 12 new tests. **26/26 pytest green.**
+- `camera_rig.evaluate_layout` IMPLEMENTED (preflight → fusion config → episode →
+  receiver → metrics; python3 only).
+- `zed/zed_single.py` hardened (HD1080+NEURAL init like the proven sample,
+  open-retry, alarm, watchdog, meta JSON sidecar, frame_idx column, --save-frame).
+- Single-cam real-data metrics (h1.5 r2.5 az90): upper body 57-106mm; knees
+  ~900mm because the TABLE OCCLUDER hides the legs from cam A (visible in the
+  frame capture) — genuine occlusion signal, the thing this experiment measures.
+
+### Still open
+- Mid-episode Isaac death rc=-15 seen once (likely the viewport window being
+  closed by hand) — GT CSV is only written at episode end; don't close the window.
+- Character animation still frozen (omni.anim.people follow-up, unchanged).
+- sweep.py not started (next: thin loop over layouts calling evaluate_layout).
 
 This file tells you exactly where the project stands and how to pick back up.
 The running status/decision log is in `~/.claude/plans/before-u-hit-the-nifty-newt.md`.
@@ -10,11 +102,130 @@ The running status/decision log is in `~/.claude/plans/before-u-hit-the-nifty-ne
 
 Phases 1–5 of the playbook are **done and the pipeline runs end-to-end in Isaac**.
 A 10-second episode booted Isaac, streamed both ZED cameras, and wrote a real
-ground-truth joint CSV. 14 unit tests pass. One known issue (frozen character
-animation) is intentionally deferred to Phase 6.
+ground-truth joint CSV. 14 unit tests pass.
 
-**Next session = Phase 6:** the `zed/` body-tracking + fusion scripts, the metrics,
-and then `sweep.py`. Plus fix the animation.
+Phase 6 is in progress. `isaac/scene_builder.py` has uncommitted WIP changes
+(not yet re-tested in Isaac):
+- 4-camera bug fix: deactivates `test.usd`'s own `ZED_X`/`ZED_X_01`/`GroundPlane`/
+  `DomeLight`/`ActionGraph` prims on the session layer after referencing it.
+- Gravity disabled via `/World/PhysicsScene` (`CreateGravityMagnitudeAttr(0.0)`).
+- **Camera orientation fix (2026-06-11, this session):** `_rotmat_to_wxyz` had a
+  sign bug — `pitch = asin(fz)` instead of `pitch = asin(-fz)`. With the
+  `Rz(yaw) * Ry(pitch)` quaternion applied to Isaac's default forward axis (+X),
+  `forward.z = -sin(pitch)`, so `pitch` must be `asin(-fz)` (positive pitch =
+  tilt down) to match the look-at forward vector `fz`. Fixed; yaw formula
+  (`atan2(fy, fx)`) was already correct. **Not yet verified live in Isaac** —
+  user is running a quick experiment to check body tracking / camera aim next.
+
+`zed/zed_single.py` (single-camera body tracking, BODY_18, HUMAN_BODY_ACCURATE,
+RIGHT_HANDED_Y_UP) is written but untracked/untested.
+
+Known issue (frozen character animation) may already be addressed by the
+session-layer deactivation above (Option B variant) — needs re-verification.
+
+### Issue B — root cause found and fixed (2026-06-11, this session)
+
+It was NOT `/dev/shm` SHM slots (those carb-RStringInternals files are normal
+Carbonite leftovers, harmless). The real cause: Isaac's
+"Error: failed to create RTP Session (err:-74)" / "Error during zed streamer
+initialization 0" looping on port 30000 was because **two zombie
+`zed_single.py` processes from earlier test runs were still holding UDP sockets
+30000 and 30002** (`ss -tulnp` showed both bound by stale `python3
+zed/zed_single.py` PIDs).
+
+Mechanism: `zed.grab(runtime)` blocks indefinitely if the Isaac SHM stream never
+arrives. The `--duration` check only runs at the top of the while loop, so a
+blocked `grab()` means the loop never times out, `finally` is never reached, and
+the process never calls `zed.close()` — permanently squatting the port.
+
+Fixes applied:
+- Killed the two stale processes (PIDs were on ports 30000/30002) — ports now
+  free.
+- `zed/zed_single.py`: added a daemon watchdog thread (`threading`, stdlib only)
+  that calls `zed.close()` after `--duration` to force an in-progress `grab()`
+  to return, so the loop always exits and `finally` always runs. `finally` now
+  wraps `disable_body_tracking()`/`close()` in try/except (camera may already be
+  closed by the watchdog) so cleanup never masks the real error and the CSV is
+  always written.
+
+Still TODO for issue B: a general cleanup script for stale SHM/ports between
+Isaac runs would still be useful if Isaac itself crashes mid-run, but the
+immediate blocker (zombie zed_single.py processes) is fixed at the source.
+
+**Next:** re-run the proven episode command, confirm camera orientation looks
+correct (cameras pointing at hip, not ceiling), confirm joints animate, then
+re-test `zed_single.py` on port 30000 now that the port is free and the watchdog
+fix is in place. Then continue to `zed/zed_fusion.py`, `analysis/joint_map.py`,
+`analysis/metrics.py`, `evaluate_layout`, `sweep.py`.
+
+### Re-run result (2026-06-11, this session) — `results/layouts/ground_truth_test_002.csv`
+
+Ran `--h 1.5 --r 2.5 --rel-az 90 --subject-name center --duration 10
+--layout-id test_002 --machine laptop` with the port-squatting fix + pitch-sign
+fix in place.
+
+- **Streaming: clean.** Both `[Port: 30000]` and `[Port: 30002]` initialized
+  with no RTP/streamer errors (`Initializing streamer with ID 0 on port 30000`,
+  `ID 1 on port 30002` — no "failed to create RTP Session" loop). Confirms the
+  zombie-process fix for issue B works.
+- **gt_logger: 101 joints**, 161 frames over ~2.7s sim time, written to
+  `ground_truth_test_002.csv`. Skeleton path is now
+  `/World/biped_demo_meters/male_adult_police_04/ManRoot/male_adult_police_04/
+  male_adult_police_04/male_adult_police_04` — the reference test.usd character
+  is `male_adult_police_04` (101 joints), NOT the old `Biped_Demo` (81 joints).
+  Only `_PRIMS_TO_DEACTIVATE` entry `/World/biped_demo_meters/ZED_X` matched
+  (`ZED_X_01`/`GroundPlane`/`DomeLight`/`ActionGraph` were not found at those
+  paths for this character — IsValid() was false, so they were silently
+  skipped). May need to re-grep the live stage hierarchy for this character's
+  actual duplicate-prim paths if a 2nd camera/light shows up unexpectedly.
+- **Animation: STILL FROZEN.** `Pelvis` x/y/z is bit-for-bit identical
+  (z=0.9277017512507277 m, standing) across all 161 frames. The session-layer
+  deactivation added this session fixed the duplicate-camera bug but did NOT
+  fix the `animationSource` double-nesting problem — Phase 6 step 1 (fix
+  character animation, options (a)/(b) in the "Known issue" section above) is
+  still outstanding.
+- Camera orientation (pitch-sign fix) was NOT visually confirmed — Isaac ran
+  with `headless: false` (DISPLAY=:1) but the run finished/closed before
+  visual inspection. User wants to do a hands-on experiment next: run a
+  longer episode and use `zed_single.py` against port 30000 (now free) to
+  check both camera aim and body-tracking detection live.
+
+### Issue C (NEW, 2026-06-11) — zed_single.py gets 0 rows on port 30000
+
+Ran `--duration 60 --layout-id test_003` (Isaac), then `zed_single.py --port
+30000 --layout-id test_003 --duration 30`. Isaac's two streamers initialized
+cleanly (`ID 0 on port 30002`, `ID 1 on port 30000`, no RTP errors — issue B
+fix holds). But `zed_single.py` printed:
+
+```
+[Streaming] Warning : receiving port 30000 is not available (already used)... switching to port 30002. Retrying...
+[Streaming] Warning : receiving port 30002 is not available (already used)... switching to port 30004. Retrying...
+[Streaming] Backward compatibility required.
+```
+
+zed.open() succeeded (S/N 49123828, simulated ZED X, NEURAL depth), body
+tracking enabled, but **0 frames ever grabbed successfully** in 30s (no
+`[diag]` lines, no `ZED_SINGLE_READY`), 0 rows written. Isaac's clock is ~3h
+behind the host clock (its log timestamps read ~10:01-10:02Z while the host
+was at ~13:01-13:03 local), so there WAS an ~8s overlap where Isaac was still
+live — yet still 0 frames. This points to the SDK falling into "Backward
+compatibility" mode on port 30004 (plain network receive), which nothing is
+sending to — Isaac's SHM-Boost sender is on 30000/30002, not 30004.
+
+Also found: `/usr/local/zed/samples/body tracking/body tracking/python/
+body_tracking.py` line 84 has been hand-edited (outside the repo, pre-existing
+from an earlier session) to hardcode `init_params.set_from_stream("127.0.0.1",
+30000)  # point to Isaac Sim stream` — this is probably what was used for the
+manual ZED_Depth_Viewer-style test the user ran, where port 30002 reportedly
+showed an image but 30000 didn't. Not yet reconciled with the "receiving port
+not available" cascade above (same cascade should, by the +2 fallback logic,
+affect both 30000 and 30002 the same way — needs a controlled side-by-side
+test).
+
+**Next:** run a longer Isaac episode and start `zed_single.py` on BOTH ports
+30000 and 30002 immediately once streaming is confirmed live, to compare
+behavior side by side and isolate whether port 30000 is uniquely broken or if
+this is a timing/race condition with the SHM-Boost backend.
 
 ---
 

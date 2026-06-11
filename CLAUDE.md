@@ -38,11 +38,17 @@ ZED SDK side (pyzed init, fusion config poses): RIGHT_HANDED_Y_UP, metres.
       init.coordinate_system = sl.COORDINATE_SYSTEM.RIGHT_HANDED_Y_UP
       init.coordinate_units  = sl.UNIT.METER
 
-make_fusion_config.py converts Isaac Z-up poses to ZED Y-up before writing the
-fusion 'pose' (4x4). Permutation P(x,y,z) = (-y,-z,x):
-    ZED translation = (-isaac_y, -isaac_z, isaac_x)
-    ZED rotation    = P R Pᵀ      (R must be a PROPER rotation, det +1)
-This matches scripts/convert_isaac_pose_to_zed_fusion.py in the zed-isaac-sim repo.
+make_fusion_config.py converts Isaac Z-up poses for the fusion 'pose' (4x4).
+CORRECTED 2026-06-11 (empirically, from real fused output — the old P R Pᵀ rule
+and the zed-isaac-sim convert script were both wrong):
+  1. The RUNTIME pose fusion applies is (P @ R, P @ t) with P(x,y,z)=(-y,-z,x).
+     Only the WORLD side is permuted — the ZED Y-up camera frame already matches
+     R's camera-side axes (columns [right, up, -forward]), so conjugation
+     P R Pᵀ wrongly permutes the camera axes (put fused bodies metres off).
+  2. The FILE stores poses in the ZED IMAGE frame (x right, y DOWN, z FORWARD);
+     read_fusion_configuration_file converts file->runtime by conjugating with
+     D = diag(1,-1,-1). So the file must contain:
+         file_R = D (P R) D        file_t = D P t = (-y, z, -x)
 NOTE: camera_rig.rotation_matrix_from_look_at returns a row-basis (det -1) matrix —
 fine for direction math, but make_fusion_config.proper_rotation_world_from_cam()
 rebuilds a proper (det +1) rotation before conversion.
