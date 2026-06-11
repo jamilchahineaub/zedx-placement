@@ -90,7 +90,6 @@ zedx-placement/
 │   └── preflight.py            # cleanup gate (kill stale procs, free ports, wipe SHM)
 ├── sweep.py                    # loops the whole grid, calls evaluate_layout per layout
 ├── results/                    # OUTPUT — append-only (CSVs, per-layout artifacts, logs)
-├── CLAUDE.md                   # engineering ground-truth notes (read before editing)
 └── README.md                   # this file
 ```
 
