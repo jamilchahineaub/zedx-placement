@@ -1,0 +1,4 @@
+h_m,r_m,rel_az_deg,tilt_deg,convergence_angle_deg,subject_pos_name,mpjpe_mm,pck30,pck50,detection_coverage,joint_visibility_cam_a,joint_visibility_cam_b,joint_visibility_either,joint_visibility_both,unique_contribution_cam_b,jitter_variance,id_drops
+1.5,1.5,60,18.43494882292201,41.40962210927084,center,109.9795656762773,0.0,0.0,1.0,1.0,1.0,1.0,1.0,0.0,nan,nan
+1.5,1.5,90,18.43494882292201,59.99999999999999,center,122.32841881393662,0.0,0.0,1.0,1.0,1.0,1.0,1.0,0.0,nan,nan
+1.5,1.5,120,18.43494882292201,75.52248781407006,center,126.99059951226624,0.0,0.0,1.0,1.0,1.0,1.0,0.8666666666666667,0.0,nan,nan
