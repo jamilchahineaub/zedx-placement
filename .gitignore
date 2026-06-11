@@ -7,3 +7,5 @@ results/layouts/fusion_config_test.json
 results/logs/
 results/layouts/*_meta.json
 /tmp/
+HANDOFF.md
+CLAUDE.md
