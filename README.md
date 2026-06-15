@@ -80,9 +80,13 @@ Edit/create `config/machine.<name>.yaml` (the only place with absolute paths), t
 isaac_python:    /path/to/isaacsim/python.sh
 zed_python:      python3
 zed_ext_path:    /path/to/zed-isaac-sim/exts
-reference_scene: /path/to/test.usd       # character source, read-only
+reference_scene: assets/test.usd         # bundled in repo (relative = resolved against repo root)
 headless:        true                    # false = show viewport
 ```
+
+`test.usd` ships in the repo under `assets/`, so it travels with a clone — no need to point
+at an external path. The character mesh itself is still pulled from S3 at runtime, so the
+machine needs internet. To change the scene, re-save into `assets/test.usd` and commit it.
 
 ## Changing things
 

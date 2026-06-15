@@ -164,6 +164,11 @@ def _load_character(stage, cfg, machine_cfg, subject_pos):
     from isaacsim.core.utils.stage import add_reference_to_stage
 
     ref_scene = machine_cfg.get("reference_scene") or cfg.get("reference_scene")
+    # A repo-relative reference_scene (e.g. "assets/test.usd") is resolved against the
+    # repo root so it works regardless of the subprocess CWD. Absolute paths pass through.
+    if ref_scene and not os.path.isabs(ref_scene):
+        repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        ref_scene = os.path.join(repo_root, ref_scene)
     char_src_prim = cfg.get("character_prim", "/World/biped_demo_meters")
     char_dst_prim = "/World/biped_demo_meters"
 

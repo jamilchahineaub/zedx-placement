@@ -1,5 +1,5 @@
 isaac_python:    /home/jimmy/isaacsim/python.sh
 zed_python:      python3
 zed_ext_path:    /home/jimmy/zed-isaac-sim/exts
-reference_scene: /home/jimmy/Desktop/jimmyNYUL/test.usd   # source of /World/biped_demo_meters
+reference_scene: assets/test.usd   # bundled in repo; resolved against repo root (source of /World/biped_demo_meters)
 headless:        false
