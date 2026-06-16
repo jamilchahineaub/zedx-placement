@@ -74,3 +74,40 @@ zed_helper_attrs:
   resolution:  "inputs:resolution"      # token: HD1200 | HD1080 | SVGA
   fps:         "inputs:fps"             # uint
   transport:   "inputs:transportLayerMode"  # token: BOTH | NETWORK | IPC
+
+# --- Layout ranking (analysis/rank.py) ---------------------------------------
+# Post-processes results/results.csv to rank camera positions. Does NOT touch the
+# sim. See README "Ranking". Each metric is scored to a 0-1 "goodness", grouped
+# into 3 categories, then combined. Metrics that are NaN across the sweep (e.g.
+# jitter/id_drops on a static pose) drop out automatically. rank.py knows metric
+# directions (mpjpe_mm/jitter_variance/id_drops = lower better; the rest = higher
+# better and already 0-1).
+ranking:
+  coverage_floor: 0.8     # hard gate: drop layouts whose worst-case detection_coverage < this
+  mpjpe_good_mm:  20.0    # mpjpe at/below this -> accuracy goodness 1.0 (experiment acceptance band)
+  mpjpe_bad_mm:   200.0   # mpjpe at/above this -> accuracy goodness 0.0
+
+  # Per-metric weights WITHIN each category (renormalized over non-NaN metrics).
+  categories:
+    accuracy:
+      weight: 0.50
+      metrics:
+        mpjpe_mm: 0.80
+        pck50:    0.20
+    reliability:
+      weight: 0.30
+      metrics:
+        detection_coverage: 0.50
+        jitter_variance:    0.35
+        id_drops:           0.15
+    geometry:
+      weight: 0.20
+      metrics:
+        joint_visibility_both:     0.70
+        unique_contribution_cam_b: 0.30
+
+  # Category-weight presets [accuracy, reliability, geometry] for sensitivity.
+  presets:
+    balanced:   [0.50, 0.30, 0.20]
+    accuracy:   [0.70, 0.20, 0.10]
+    robustness: [0.34, 0.33, 0.33]

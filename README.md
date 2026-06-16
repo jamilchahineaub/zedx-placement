@@ -124,6 +124,39 @@ Accuracy columns (`mpjpe`, `pck`, `coverage`) compare ZED prediction vs ground t
 the rest are geometry from camera + joint positions. Computed in `analysis/metrics.py` and
 `analysis/geo_prescreener.py`.
 
+## Ranking
+
+`sweep.py` only fills `results.csv`; it does not rank. `analysis/rank.py` reads that CSV
+(read-only) and ranks the camera positions.
+
+```bash
+python3 analysis/rank.py                              # rank results/results.csv, print top 10
+python3 analysis/rank.py --preset accuracy --top 5
+python3 analysis/rank.py --out reports/ranking.csv    # also write a CSV (never into results/)
+```
+
+How it scores (all weights/thresholds in `config/experiment.yaml` → `ranking:`):
+- Groups rows by camera position `(h, r, rel_az)` and averages across subject positions.
+- **Gate:** drops layouts with NaN MPJPE or worst-case `detection_coverage` below
+  `coverage_floor` (default 0.8).
+- Each metric → a 0–1 "goodness": already-0–1 metrics (pck, coverage, visibility,
+  unique-contribution) used as-is; `mpjpe` mapped through the 20–200 mm acceptance band;
+  `jitter`/`id_drops` normalized within the sweep. **A metric that's NaN across the sweep
+  (e.g. jitter on a static pose) drops out automatically** and re-activates when data exists.
+- Three categories — **Accuracy 0.50 / Reliability 0.30 / Geometry 0.20** — combine into a
+  composite. Geometry is capped low on purpose: it's an upstream proxy for accuracy you
+  already measured, kept only as a generalization hedge.
+
+The weights are a judgment call, so the output makes the result **robust to them**:
+- a **Pareto frontier** over the 3 categories flags layouts not beaten on *any* category
+  (a sole Pareto winner is best under *every* weighting — reported explicitly);
+- **preset sensitivity** (`balanced` / `accuracy` / `robustness`) shows whether the top
+  picks move when weights change.
+
+Change weights/band/floor/presets in the `ranking:` block — no code change. As the
+warehouse scene (occlusion) and moving humans (jitter/id_drops) come online, those dormant
+metrics start differentiating layouts with no change to `rank.py`.
+
 ## Notes
 
 - Use `--model accurate --conf 20` (defaults); `fast` doesn't detect the render.
