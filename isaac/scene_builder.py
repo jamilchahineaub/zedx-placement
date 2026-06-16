@@ -22,6 +22,7 @@ import sys
 # camera_rig lives next to this file (isaac/). Pure math, no omni imports.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import camera_rig  # noqa: E402
+import character_motion  # noqa: E402  (pxr imported lazily inside its functions)
 
 
 # Shipped UV-grid texture so no surface is untextured (ZED depth needs texture to
@@ -251,6 +252,42 @@ def _zed_x_usd_path(machine_cfg):
     return os.path.join(ext, "sl.sensor.camera", "data", "usd", "ZED_X.usdc")
 
 
+def _load_warehouse(stage, cfg, machine_cfg):
+    """Reference the Isaac Simple_Warehouse at /World/Warehouse.
+
+    Path = cfg['warehouse_usd'] if set, else get_assets_root_path() + the standard
+    Simple_Warehouse path (needs network / Isaac assets, like the S3 character).
+    Adds a dome fill light so the synthetic render is bright enough for ZED.
+    """
+    from isaacsim.core.utils.stage import add_reference_to_stage
+    from isaacsim.storage.native import get_assets_root_path
+    from isaacsim.core.utils.prims import create_prim
+
+    wh = (cfg.get("warehouse_usd") or "").strip()
+    if not wh:
+        root = get_assets_root_path()
+        if not root:
+            print("RUN_FAILED warehouse: get_assets_root_path() returned None and "
+                  "warehouse_usd is empty — set warehouse_usd (path or URL) in experiment.yaml")
+            return
+        wh = root.rstrip("/") + "/Isaac/Environments/Simple_Warehouse/warehouse.usd"
+
+    print(f"scene_builder: loading warehouse {wh}")
+    add_reference_to_stage(usd_path=wh, prim_path="/World/Warehouse")
+    # Dome fill light (warehouse may be dark for the camera; ZED needs a lit scene).
+    create_prim("/World/Lights/WarehouseDome", "DomeLight",
+                attributes={"inputs:intensity": 1000.0})
+
+
+def _find_skeleton_prim(stage):
+    """First UsdSkel.Skeleton in the stage (mirrors gt_logger discovery)."""
+    from pxr import UsdSkel
+    for prim in stage.Traverse():
+        if prim.IsA(UsdSkel.Skeleton):
+            return prim
+    return None
+
+
 # ---------------------------------------------------------------------------
 # Public entry point
 # ---------------------------------------------------------------------------
@@ -305,11 +342,22 @@ def build_scene(h, r, rel_az, subject_name, cfg, machine_cfg, cams="both"):
 
     subject_pos = _subject_pos(subject_name, cfg)
 
-    # 4) Room.
-    _build_room(stage, cfg)
+    # 4) Scene: warehouse (default) or the procedural room.
+    if cfg.get("scene_type") == "warehouse":
+        _load_warehouse(stage, cfg, machine_cfg)
+    else:
+        _build_room(stage, cfg)
 
     # 5) Character.
     _load_character(stage, cfg, machine_cfg, subject_pos)
+
+    # 5b) In-place motion (deterministic baked UsdSkel animation), unless disabled.
+    if cfg.get("character_motion", "inplace") != "none":
+        skel_prim = _find_skeleton_prim(stage)
+        if skel_prim is not None:
+            character_motion.apply_inplace_animation(stage, skel_prim, cfg)
+        else:
+            print("scene_builder: no Skeleton found for motion; running static")
 
     # 6) Two ZED_X cameras at ring positions, aimed at hip height (Z-up).
     aim_h = cfg.get("aim_height_m", 1.0)

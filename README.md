@@ -90,12 +90,18 @@ machine needs internet. To change the scene, re-save into `assets/test.usd` and 
 
 ## Changing things
 
-- **Room / occluders** — `config/experiment.yaml` (`room_size_m`, `occluders`);
-  geometry in `isaac/scene_builder.py` `_build_room`.
+- **Scene** — `config/experiment.yaml` `scene_type`: `warehouse` (default, Isaac
+  Simple_Warehouse) or `simple_room` (procedural). Warehouse loads from the Isaac assets
+  root (network) or a `warehouse_usd` override; loader in `isaac/scene_builder.py`
+  `_load_warehouse`. The procedural room (`room_size_m`, `occluders`) is `_build_room` and
+  applies only to `simple_room`.
 - **Character** — `reference_scene` in the machine config + `character_prim` in
   experiment.yaml. Subject positions: `subject_positions` in experiment.yaml.
-- **Animation** — character is static; in-place motion needs `omni.anim.people` wired into
-  `scene_builder.py` (planned follow-up). `jitter_variance`/`id_drops` are NaN until then.
+- **Motion** — `config/experiment.yaml` `character_motion`: `inplace` (default; deterministic
+  baked in-place articulation) or `none` (static). Amplitudes/period in the `motion:` block;
+  the animation is authored in `isaac/character_motion.py` (a UsdSkel clip, same motion every
+  layout so placements compare fairly). `jitter_variance`/`id_drops` are live under motion,
+  NaN when `none`.
 - **Metrics** — compute in `analysis/metrics.py` `compute_metrics`, add the column to
   `RESULTS_COLUMNS`; joint pairing in `analysis/joint_map.py`. Run the tests after.
 - **Sweep** — grid in `experiment.yaml`; search logic in `sweep.py` (`layouts()` + gates).
@@ -118,11 +124,14 @@ machine needs internet. To change the scene, re-save into `assets/test.usd` and 
 | `joint_visibility_cam_a/b/either` | fraction of joints in each camera's FOV+range |
 | `joint_visibility_both` | fraction visible to both with a good triangulation angle |
 | `unique_contribution_cam_b` | fraction cam B adds that cam A misses |
-| `jitter_variance`, `id_drops` | NaN until animation is added |
+| `jitter_variance` | mean over joints of the temporal variance (mm²) of the prediction error — how much tracking wobbles around truth (live under motion; NaN if static) |
+| `id_drops` | (#distinct tracked body-ids − 1) + (#tracked→untracked gaps) over the window (live under motion; NaN if static) |
 
 Accuracy columns (`mpjpe`, `pck`, `coverage`) compare ZED prediction vs ground truth;
 the rest are geometry from camera + joint positions. Computed in `analysis/metrics.py` and
-`analysis/geo_prescreener.py`.
+`analysis/geo_prescreener.py`. Under motion, `mpjpe`/`pck`/`jitter`/`id_drops` use a
+per-frame pass (GT↔prediction frames matched by `wall_clock`); a static character uses a
+time-averaged pose. `jitter`/`id_drops` only differentiate layouts once the character moves.
 
 ## Ranking
 
@@ -159,7 +168,13 @@ metrics start differentiating layouts with no change to `rank.py`.
 
 ## Notes
 
+- Default scene is the **warehouse** with an **in-place moving human** (`scene_type:
+  warehouse`, `character_motion: inplace`). Set `scene_type: simple_room` /
+  `character_motion: none` to fall back to the static procedural-room setup.
+- The **warehouse loads over the network** (Isaac assets root / S3), like the character
+  mesh — the machine needs internet. If `get_assets_root_path()` is unset, put a full path
+  or the S3 URL in `warehouse_usd` (`config/experiment.yaml`).
 - Use `--model accurate --conf 20` (defaults); `fast` doesn't detect the render.
 - The ground-truth CSV is written at episode end — don't close the viewport mid-run.
 - `results/` is append-only. `reference_scene` (test.usd) is never written back to.
-- Current calibrated fusion: ~112 mm MPJPE.
+- Static (procedural room, frozen pose) calibrated fusion: ~112 mm MPJPE.

@@ -28,14 +28,33 @@ subject_positions:
   - name: wall_mid
     pos:  [0.0, -2.0, 0.0]
 
-scene_type:         simple_room
-room_size_m:        [6.0, 6.0, 6.0]
+# Scene: "warehouse" (Isaac Simple_Warehouse, default) | "simple_room" (procedural).
+scene_type:         warehouse
+room_size_m:        [6.0, 6.0, 6.0]   # only used by simple_room
 episode_duration_s: 30
 
-# Occluders placed by scene_builder.py (toggle to study occlusion robustness).
+# Warehouse asset. Default resolves at runtime via isaacsim get_assets_root_path()
+# (needs network / Isaac assets, like the S3 character). Override with a full path
+# or URL here if get_assets_root_path() is not configured, e.g.:
+#   warehouse_usd: "https://omniverse-content-production.s3-us-west-2.amazonaws.com/Assets/Isaac/5.1/Isaac/Environments/Simple_Warehouse/warehouse.usd"
+warehouse_usd:      ""   # "" => get_assets_root_path() + Simple_Warehouse/warehouse.usd
+
+# Occluders placed by scene_builder.py (simple_room only; warehouse has its own clutter).
 occluders:
   table:  true    # 1 x 2 x 0.8 m box at (1.2, 0, 0.4)
   pillar: true    # 0.4 m dia, 2 m tall cylinder at (-1.2, 1.0, 1.0)
+
+# Character motion: "inplace" (deterministic baked in-place articulation) | "none" (static).
+# In-place = turn/weight-shift + arm/leg articulation at the subject point; the SAME motion
+# runs every layout so placements are compared fairly. Drives the existing UsdSkel skeleton
+# (NOT a physics articulation); captured per-frame by gt_logger; activates jitter/id_drops.
+character_motion:   inplace
+motion:
+  period_s:      4.0    # one full animation cycle (loops over the capture window)
+  fps:           30     # animation timecodes per second (stage TimeCodesPerSecond)
+  arm_deg:       35.0   # shoulder/elbow raise-lower amplitude
+  torso_deg:     20.0   # spine/neck yaw (turn-in-place) amplitude
+  leg_deg:       12.0   # thigh/knee weight-shift amplitude
 
 # Path to the biped character source scene comes from machine.<name>.yaml
 # (reference_scene). character_prim is the prim referenced from it.
