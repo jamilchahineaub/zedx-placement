@@ -1,5 +1,5 @@
 isaac_python:    /home/jlc03/isaacsim/python.sh
 zed_python:      python3
 zed_ext_path:    /home/jlc03/zed-isaac-sim/exts
-reference_scene: assets/test.usd   # bundled in repo; resolved against repo root
+reference_scene: assets/test.usd
 headless:        false
