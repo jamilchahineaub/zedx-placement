@@ -38,11 +38,15 @@ NAN = float("nan")
 LAYOUT_KEYS = ("h_m", "r_m", "rel_az_deg")
 
 # Metrics whose smaller value is better.
-LOWER_BETTER = {"mpjpe_mm", "jitter_variance", "id_drops"}
+LOWER_BETTER = {"mpjpe_mm", "mpjpe_aligned_mm", "registration_offset_mm",
+                "jitter_variance", "id_drops"}
+# Lower-better metrics scored against the MPJPE acceptance band (absolute scale).
+BAND_METRICS = {"mpjpe_mm", "mpjpe_aligned_mm"}
 # Lower-better metrics with no natural absolute scale -> within-sweep normalize.
 RELATIVE_LOWER = {"jitter_variance", "id_drops"}
 # Columns aggregated across subject positions by (NaN-aware) mean.
 _MEAN_COLS = [
+    "mpjpe_aligned_mm", "registration_offset_mm",
     "pck30", "pck50", "detection_coverage",
     "joint_visibility_cam_a", "joint_visibility_cam_b",
     "joint_visibility_either", "joint_visibility_both",
@@ -154,7 +158,7 @@ def goodness_columns(layouts, cfg):
             notes[m] = "dropped (no data this run)"
             continue
 
-        if m == "mpjpe_mm":
+        if m in BAND_METRICS:
             span = (bad_ref - good_ref) or 1.0
             goods[m] = [None if _isnan(v)
                         else max(0.0, min(1.0, (bad_ref - v) / span)) for v in raw]

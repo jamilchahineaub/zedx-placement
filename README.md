@@ -118,8 +118,10 @@ machine needs internet. To change the scene, re-save into `assets/test.usd` and 
 | `tilt_deg` | camera downward tilt |
 | `convergence_angle_deg` | triangulation angle between the two cameras at the subject |
 | `subject_pos_name` | subject position used |
-| `mpjpe_mm` | mean per-joint error, mm (main accuracy number; lower better) |
-| `pck30`, `pck50` | fraction of joints within 30 / 50 mm |
+| `mpjpe_mm` | absolute mean per-joint error, mm (includes the global fused↔GT frame offset; lower better) |
+| `mpjpe_aligned_mm` | **true pose accuracy** — MPJPE after removing the per-frame global translation (registration offset). This is what ranking scores accuracy on, since the absolute offset is a fusion-calibration artifact, not a placement property |
+| `registration_offset_mm` | the global fused↔GT frame translation (diagnostic). If large/variable, the fusion pose calibration is off — but `mpjpe_aligned_mm` already factors it out |
+| `pck30`, `pck50` | fraction of joints within 30 / 50 mm (computed on the absolute error) |
 | `detection_coverage` | fraction of frames a body was detected |
 | `joint_visibility_cam_a/b/either` | fraction of joints in each camera's FOV+range |
 | `joint_visibility_both` | fraction visible to both with a good triangulation angle |

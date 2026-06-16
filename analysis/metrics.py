@@ -262,24 +262,59 @@ def _frame_errors(gt_joints, pred_zed_joints, transform_fn):
     return errs
 
 
+def _aligned_and_offset(err_vectors_m):
+    """Given per-joint error vectors (pred-gt, metres) for ONE frame/pose, return
+    (translation_aligned_mpjpe_mm, registration_offset_mm): the offset is the joint
+    centroid of the error (a global translation between the fused and GT frames);
+    the aligned MPJPE is the per-joint error after removing that translation (true
+    pose fidelity, independent of frame-registration bias)."""
+    if not err_vectors_m:
+        return NAN, NAN
+    n = len(err_vectors_m)
+    off = [sum(v[k] for v in err_vectors_m) / n for k in range(3)]
+    aln = 1000.0 * sum(math.sqrt(sum((v[k] - off[k]) ** 2 for k in range(3)))
+                       for v in err_vectors_m) / n
+    off_mm = 1000.0 * math.sqrt(sum(o * o for o in off))
+    return aln, off_mm
+
+
 def mpjpe_pck_per_frame(pairs, transform_fn):
-    """Pool per-(frame,joint) errors over matched frames -> (mpjpe, pck30, pck50,
-    per_joint_mean)."""
+    """Pool per-(frame,joint) errors over matched frames. Alignment (offset removal)
+    is done PER FRAME. Returns (mpjpe, pck30, pck50, per_joint_mean, mpjpe_aligned,
+    registration_offset)."""
     per_joint = {}
+    abs_pool, aln_pool, offs = [], [], []
     for gt_f, pred_f in pairs:
         body = _primary_body(pred_f)
         if body is None:
             continue
-        for k, v in _frame_errors(gt_f["joints"], body["joints"], transform_fn).items():
-            per_joint.setdefault(k, []).append(v)
-    pooled = [v for vs in per_joint.values() for v in vs]
-    if not pooled:
-        return NAN, NAN, NAN, {}
-    mpjpe = sum(pooled) / len(pooled)
-    pck30 = sum(1 for v in pooled if v <= 30.0) / len(pooled)
-    pck50 = sum(1 for v in pooled if v <= 50.0) / len(pooled)
+        vecs, names = [], []
+        for zed_name, isaac_name in joint_map.mapped_pairs():
+            if zed_name in body["joints"] and isaac_name in gt_f["joints"]:
+                p = transform_fn(body["joints"][zed_name])
+                g = gt_f["joints"][isaac_name]
+                vecs.append([p[k] - g[k] for k in range(3)])
+                names.append(isaac_name)
+        if not vecs:
+            continue
+        n = len(vecs)
+        off = [sum(v[k] for v in vecs) / n for k in range(3)]
+        offs.append(1000.0 * math.sqrt(sum(o * o for o in off)))
+        for v, nm in zip(vecs, names):
+            e = 1000.0 * math.sqrt(sum(v[k] ** 2 for k in range(3)))
+            ea = 1000.0 * math.sqrt(sum((v[k] - off[k]) ** 2 for k in range(3)))
+            abs_pool.append(e)
+            aln_pool.append(ea)
+            per_joint.setdefault(nm, []).append(e)
+    if not abs_pool:
+        return NAN, NAN, NAN, {}, NAN, NAN
+    mpjpe = sum(abs_pool) / len(abs_pool)
+    pck30 = sum(1 for v in abs_pool if v <= 30.0) / len(abs_pool)
+    pck50 = sum(1 for v in abs_pool if v <= 50.0) / len(abs_pool)
     per_joint_mean = {k: sum(vs) / len(vs) for k, vs in per_joint.items()}
-    return mpjpe, pck30, pck50, per_joint_mean
+    mpjpe_aln = sum(aln_pool) / len(aln_pool)
+    reg_off = sum(offs) / len(offs)
+    return mpjpe, pck30, pck50, per_joint_mean, mpjpe_aln, reg_off
 
 
 def compute_jitter_variance(pairs, transform_fn):
@@ -357,12 +392,19 @@ def compute_metrics(gt_csv, pred_csv, meta, h, r, rel_az_deg, cfg,
         pred_frames = load_pred_per_frame(pred_csv, conf_min=conf_min)
         offset_s = float((cfg.get("metrics") or {}).get("frame_offset_s", 0.0))
         pairs = associate_frames(gt_frames, pred_frames, offset_s=offset_s)
-        mpjpe, pck30, pck50, per_joint = mpjpe_pck_per_frame(pairs, transform_fn)
+        (mpjpe, pck30, pck50, per_joint,
+         mpjpe_aligned, reg_offset) = mpjpe_pck_per_frame(pairs, transform_fn)
         jitter_var = compute_jitter_variance(pairs, transform_fn)
         id_drops = compute_id_drops(pred_frames)
     else:
         pred_iso = {n: transform_fn(p) for n, p in pred_avg_raw.items()}
         mpjpe, pck30, pck50, per_joint = mpjpe_pck(gt_avg, pred_iso)
+        vecs = []
+        for zed_name, isaac_name in joint_map.mapped_pairs():
+            if zed_name in pred_iso and isaac_name in gt_avg:
+                p, g = pred_iso[zed_name], gt_avg[isaac_name]
+                vecs.append([p[k] - g[k] for k in range(3)])
+        mpjpe_aligned, reg_offset = _aligned_and_offset(vecs)
         jitter_var = NAN
         id_drops = NAN
 
@@ -382,7 +424,9 @@ def compute_metrics(gt_csv, pred_csv, meta, h, r, rel_az_deg, cfg,
         "tilt_deg": camera_rig.tilt_angle(h, r, aim_h),
         "convergence_angle_deg": vis["convergence_angle_deg"],
         "subject_pos_name": subject_pos_name,
-        "mpjpe_mm": mpjpe,
+        "mpjpe_mm": mpjpe,                       # absolute (includes frame-registration offset)
+        "mpjpe_aligned_mm": mpjpe_aligned,       # translation-aligned = true pose accuracy
+        "registration_offset_mm": reg_offset,    # global fused<->GT frame offset (diagnostic)
         "pck30": pck30,
         "pck50": pck50,
         "detection_coverage": coverage,
@@ -404,7 +448,8 @@ def compute_metrics(gt_csv, pred_csv, meta, h, r, rel_az_deg, cfg,
 
 RESULTS_COLUMNS = [
     "h_m", "r_m", "rel_az_deg", "tilt_deg", "convergence_angle_deg",
-    "subject_pos_name", "mpjpe_mm", "pck30", "pck50",
+    "subject_pos_name", "mpjpe_mm", "mpjpe_aligned_mm", "registration_offset_mm",
+    "pck30", "pck50",
     "detection_coverage", "joint_visibility_cam_a", "joint_visibility_cam_b",
     "joint_visibility_either", "joint_visibility_both",
     "unique_contribution_cam_b", "jitter_variance", "id_drops",

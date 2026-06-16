@@ -95,6 +95,8 @@ def test_perfect_prediction_fusion(tmp_path):
     assert m["mpjpe_mm"] == pytest.approx(0.0, abs=1e-6)
     assert m["pck30"] == 1.0
     assert m["pck50"] == 1.0
+    assert m["mpjpe_aligned_mm"] == pytest.approx(0.0, abs=1e-6)
+    assert m["registration_offset_mm"] == pytest.approx(0.0, abs=1e-6)
 
 
 def test_offset_40mm(tmp_path):
@@ -107,6 +109,9 @@ def test_offset_40mm(tmp_path):
     assert m["mpjpe_mm"] == pytest.approx(40.0, abs=1e-6)
     assert m["pck30"] == 0.0
     assert m["pck50"] == 1.0
+    # a CONSTANT 40 mm shift is pure registration offset -> aligned MPJPE ~0.
+    assert m["mpjpe_aligned_mm"] == pytest.approx(0.0, abs=1e-6)
+    assert m["registration_offset_mm"] == pytest.approx(40.0, abs=1e-6)
 
 
 def test_single_cam_transform_aim_ray():

@@ -21,7 +21,7 @@ CFG = {
         "mpjpe_bad_mm": 200.0,
         "categories": {
             "accuracy": {"weight": 0.50,
-                         "metrics": {"mpjpe_mm": 0.80, "pck50": 0.20}},
+                         "metrics": {"mpjpe_aligned_mm": 0.80, "pck50": 0.20}},
             "reliability": {"weight": 0.30,
                             "metrics": {"detection_coverage": 0.50,
                                         "jitter_variance": 0.35,
@@ -38,18 +38,21 @@ CFG = {
 
 RESULTS_HEADER = [
     "h_m", "r_m", "rel_az_deg", "tilt_deg", "convergence_angle_deg",
-    "subject_pos_name", "mpjpe_mm", "pck30", "pck50", "detection_coverage",
+    "subject_pos_name", "mpjpe_mm", "mpjpe_aligned_mm", "registration_offset_mm",
+    "pck30", "pck50", "detection_coverage",
     "joint_visibility_cam_a", "joint_visibility_cam_b", "joint_visibility_either",
     "joint_visibility_both", "unique_contribution_cam_b", "jitter_variance", "id_drops",
 ]
 
 
-def L(h=1.5, r=1.5, az=90, mpjpe=110.0, pck50=0.0, cov=1.0, visb=1.0,
-      uniq=0.0, jit=NAN, idd=NAN, conv=60.0, tilt=18.0, n=1):
+def L(h=1.5, r=1.5, az=90, mpjpe=110.0, mpjpe_aligned=None, pck50=0.0, cov=1.0,
+      visb=1.0, uniq=0.0, jit=NAN, idd=NAN, conv=60.0, tilt=18.0, n=1):
     """A pre-aggregated layout dict (what aggregate_by_layout produces)."""
     return {
         "h_m": h, "r_m": r, "rel_az_deg": az, "n_subjects": n,
         "mpjpe_mm": mpjpe, "mpjpe_worst": mpjpe, "coverage_min": cov,
+        "mpjpe_aligned_mm": mpjpe if mpjpe_aligned is None else mpjpe_aligned,
+        "registration_offset_mm": NAN,
         "pck50": pck50, "pck30": 0.0, "detection_coverage": cov,
         "joint_visibility_both": visb, "unique_contribution_cam_b": uniq,
         "jitter_variance": jit, "id_drops": idd,
@@ -67,10 +70,10 @@ def _write_results(path, rows):
             w.writerow(r)
 
 
-REAL_ROWS = [
-    [1.5, 1.5, 60, 18.43, 41.41, "center", 109.98, 0, 0, 1.0, 1, 1, 1, 1.0, 0.0, "nan", "nan"],
-    [1.5, 1.5, 90, 18.43, 60.00, "center", 122.33, 0, 0, 1.0, 1, 1, 1, 1.0, 0.0, "nan", "nan"],
-    [1.5, 1.5, 120, 18.43, 75.52, "center", 126.99, 0, 0, 1.0, 1, 1, 1, 0.8667, 0.0, "nan", "nan"],
+REAL_ROWS = [  # cols: ..., mpjpe_mm, mpjpe_aligned_mm, registration_offset_mm, pck30, pck50, cov, ...
+    [1.5, 1.5, 60, 18.43, 41.41, "center", 109.98, 42.9, 93, 0, 0, 1.0, 1, 1, 1, 1.0, 0.0, "nan", "nan"],
+    [1.5, 1.5, 90, 18.43, 60.00, "center", 122.33, 47.9, 102, 0, 0, 1.0, 1, 1, 1, 1.0, 0.0, "nan", "nan"],
+    [1.5, 1.5, 120, 18.43, 75.52, "center", 126.99, 69.6, 109, 0, 0, 1.0, 1, 1, 1, 0.8667, 0.0, "nan", "nan"],
 ]
 
 
@@ -126,7 +129,7 @@ def test_aggregate_subject_filter():
 def test_mpjpe_band_goodness():
     lays = [L(mpjpe=20.0), L(mpjpe=110.0), L(mpjpe=200.0), L(mpjpe=10.0), L(mpjpe=250.0)]
     goods, _ = rank.goodness_columns(lays, CFG)
-    g = goods["mpjpe_mm"]
+    g = goods["mpjpe_aligned_mm"]   # accuracy now ranks on the aligned MPJPE (band-scored)
     assert g[0] == pytest.approx(1.0)     # at the good ref
     assert g[1] == pytest.approx(0.5)     # midpoint of the band
     assert g[2] == pytest.approx(0.0)     # at the bad ref

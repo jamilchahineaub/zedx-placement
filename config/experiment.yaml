@@ -111,8 +111,8 @@ ranking:
     accuracy:
       weight: 0.50
       metrics:
-        mpjpe_mm: 0.80
-        pck50:    0.20
+        mpjpe_aligned_mm: 0.80   # true pose accuracy (registration offset removed)
+        pck50:            0.20
     reliability:
       weight: 0.30
       metrics:

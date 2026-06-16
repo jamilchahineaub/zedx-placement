@@ -153,6 +153,8 @@ def test_mpjpe_per_frame_perfect(tmp_path):
     assert m["_motion"] is True
     assert m["mpjpe_mm"] == pytest.approx(0.0, abs=1e-6)
     assert m["pck30"] == 1.0
+    assert m["mpjpe_aligned_mm"] == pytest.approx(0.0, abs=1e-6)
+    assert m["registration_offset_mm"] == pytest.approx(0.0, abs=1e-6)
     assert m["jitter_variance"] == pytest.approx(0.0, abs=1e-6)   # zero, NOT NaN
     assert m["id_drops"] == 0.0
 
@@ -165,6 +167,8 @@ def test_mpjpe_per_frame_constant_offset(tmp_path):
     m = metrics.compute_metrics(str(gt), str(pred), META, h=1.5, r=2.5,
                                 rel_az_deg=90, cfg=CFG, mode="fusion")
     assert m["mpjpe_mm"] == pytest.approx(40.0, abs=1e-6)
+    assert m["mpjpe_aligned_mm"] == pytest.approx(0.0, abs=1e-6)      # constant shift removed
+    assert m["registration_offset_mm"] == pytest.approx(40.0, abs=1e-6)
     assert m["jitter_variance"] == pytest.approx(0.0, abs=1e-6)   # constant error -> no jitter
 
 
