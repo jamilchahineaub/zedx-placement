@@ -138,35 +138,46 @@ time-averaged pose. `jitter`/`id_drops` only differentiate layouts once the char
 ## Ranking
 
 `sweep.py` only fills `results.csv`; it does not rank. `analysis/rank.py` reads that CSV
-(read-only) and ranks the camera positions.
+(read-only) and ranks the camera positions, ending with **physical mounting instructions**
+for the best layouts.
 
 ```bash
-python3 analysis/rank.py                              # rank results/results.csv, print top 10
-python3 analysis/rank.py --preset accuracy --top 5
+python3 analysis/rank.py                              # rank results/results.csv, print top 15
+python3 analysis/rank.py --preset pose --top 10
+python3 analysis/rank.py --weights pose_fidelity=0.6,absolute_placement=0.1,stability=0.3
 python3 analysis/rank.py --out reports/ranking.csv    # also write a CSV (never into results/)
 ```
 
-How it scores (all weights/thresholds in `config/experiment.yaml` → `ranking:`):
-- Groups rows by camera position `(h, r, rel_az)` and averages across subject positions.
-- **Gate:** drops layouts with NaN MPJPE or worst-case `detection_coverage` below
-  `coverage_floor` (default 0.8).
-- Each metric → a 0–1 "goodness": already-0–1 metrics (pck, coverage, visibility,
-  unique-contribution) used as-is; `mpjpe` mapped through the 20–200 mm acceptance band;
-  `jitter`/`id_drops` normalized within the sweep. **A metric that's NaN across the sweep
-  (e.g. jitter on a static pose) drops out automatically** and re-activates when data exists.
-- Three categories — **Accuracy 0.50 / Reliability 0.30 / Geometry 0.20** — combine into a
-  composite. Geometry is capped low on purpose: it's an upstream proxy for accuracy you
-  already measured, kept only as a generalization hedge.
+### Score
+Layouts are grouped by `(h, r, rel_az)` (averaged across subjects), then scored on **three
+axes** (all weights/bands in `config/experiment.yaml → ranking:`):
 
-The weights are a judgment call, so the output makes the result **robust to them**:
-- a **Pareto frontier** over the 3 categories flags layouts not beaten on *any* category
-  (a sole Pareto winner is best under *every* weighting — reported explicitly);
-- **preset sensitivity** (`balanced` / `accuracy` / `robustness`) shows whether the top
-  picks move when weights change.
+```
+score = 0.50·pose_fidelity + 0.20·absolute_placement + 0.30·stability
+```
 
-Change weights/band/floor/presets in the `ranking:` block — no code change. As the
-warehouse scene (occlusion) and moving humans (jitter/id_drops) come online, those dormant
-metrics start differentiating layouts with no change to `rank.py`.
+| Axis | weight | metric → goodness (0–1) |
+|---|---|---|
+| **pose_fidelity** | 0.50 | `mpjpe_aligned_mm`, band 20–200 mm → `(200−x)/180` clamped. True pose accuracy, **registration-invariant** — the main thing. |
+| **absolute_placement** | 0.20 | `mpjpe_mm`, band 50–1000 mm. World-position accuracy; down-weighted because it's dominated by the fusion-registration offset (a calibration artifact). |
+| **stability** | 0.30 | `0.5·rank(id_drops) + 0.5·rank(jitter_variance)`. **Rank-normalized** = outlier-robust, so one catastrophic-jitter layout can't flatten the scale. |
+
+Dropped from scoring (no signal in this sweep, report-only): `detection_coverage` (≈1.0),
+`pck`, `joint_visibility_*`, `unique_contribution_cam_b`.
+
+### Robust to the weights
+- **Validity flag (not a gate):** every layout is ranked, but marked invalid if
+  `registration_offset_mm > 300`, `jitter_variance > 50000`, or `coverage < 0.8` (`ranking.validity`).
+- **Pareto frontier** over the 3 axes (weight-free) — because pose and absolute are separate
+  axes, a great-pose/poor-placement layout still surfaces (and is flagged).
+- **Preset sensitivity** (`balanced` / `pose` / `absolute` / `stability`) shows whether the
+  top picks move when the weights change.
+- **Mounting candidates + insight line:** the top valid+Pareto layouts are printed as
+  "mount both cameras at H m height, R m from the subject, separated by AZ°", plus the
+  height/tilt/radius correlation.
+
+Tune anything in the `ranking:` block — no code change. Current full-sweep finding: accuracy
+is driven by **camera height/tilt** (lower is better), not radius.
 
 ## Notes
 

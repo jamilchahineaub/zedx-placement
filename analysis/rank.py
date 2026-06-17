@@ -1,27 +1,26 @@
 #!/usr/bin/env python3
-# analysis/rank.py
+# analysis/rank.py  (v2)
 #
 # Ranks camera positions from results/results.csv. RUNS UNDER python3 (no omni,
 # no pyzed). READ-ONLY over results.csv; only ever writes to an explicit --out
 # (never into results/).
 #
 # A "camera position" is (h_m, r_m, rel_az_deg). Rows are grouped by it and
-# aggregated across subject positions (so we rank the layout, not layout x
-# subject). Each metric is mapped to a 0-1 "goodness", grouped into three
-# categories (accuracy / reliability / geometry), and combined into a composite.
+# aggregated across subject positions, then each layout is scored on THREE axes:
+#   pose_fidelity      = aligned MPJPE  (true pose error, registration-invariant)
+#   absolute_placement = absolute MPJPE (world position; includes the fusion offset)
+#   stability          = id_drops + jitter (temporal tracking reliability)
+# These come straight from config/experiment.yaml -> ranking (weights/bands/norms).
 #
-# Why this design (see README "Ranking"):
-#   - Most metrics are already absolute 0-1 (pck, coverage, visibility,
-#     unique_contribution) -> used as-is, NOT min-max normalized (that would
-#     turn a 0.98->1.0 gap into 0->1). Only mpjpe needs a reference scale (the
-#     experiment's 20-200mm acceptance band). jitter/id_drops have no absolute
-#     scale -> within-sweep normalization, and are NaN (drop out) until motion.
-#   - The composite weights are a judgment call, so the ranking is made robust to
-#     them: a weight-free Pareto frontier over the 3 categories flags layouts that
-#     are not dominated on ANY category, and preset sensitivity shows whether the
-#     top picks move when the weights change.
-#
-# All weights / band / floor / presets live in config/experiment.yaml -> ranking:.
+# Design notes (tuned to the full warehouse+motion sweep):
+#   - Layouts are FLAGGED valid/invalid (registration offset / jitter / coverage),
+#     but NONE are excluded — every layout is ranked and the flag is shown.
+#   - pose_fidelity and absolute_placement are SEPARATE Pareto axes, so a layout
+#     with great pose but a failed world-registration still surfaces on the
+#     frontier (and is flagged). That tradeoff is the point.
+#   - Heavy-tailed metrics (jitter) use RANK normalization (outlier-robust); the
+#     MPJPE family uses interpretable clamped bands. Pareto uses the axis goodness
+#     (monotonic), so it's robust to the exact normalization.
 
 import argparse
 import csv
@@ -35,15 +34,6 @@ _REPO = os.path.dirname(_HERE)
 
 NAN = float("nan")
 
-LAYOUT_KEYS = ("h_m", "r_m", "rel_az_deg")
-
-# Metrics whose smaller value is better.
-LOWER_BETTER = {"mpjpe_mm", "mpjpe_aligned_mm", "registration_offset_mm",
-                "jitter_variance", "id_drops"}
-# Lower-better metrics scored against the MPJPE acceptance band (absolute scale).
-BAND_METRICS = {"mpjpe_mm", "mpjpe_aligned_mm"}
-# Lower-better metrics with no natural absolute scale -> within-sweep normalize.
-RELATIVE_LOWER = {"jitter_variance", "id_drops"}
 # Columns aggregated across subject positions by (NaN-aware) mean.
 _MEAN_COLS = [
     "mpjpe_aligned_mm", "registration_offset_mm",
@@ -55,9 +45,7 @@ _MEAN_COLS = [
 ]
 
 
-# ---------------------------------------------------------------------------
-# Small NaN-aware helpers
-# ---------------------------------------------------------------------------
+# --------------------------------------------------------------------------- helpers
 
 def _isnan(v):
     return v is None or (isinstance(v, float) and math.isnan(v))
@@ -85,229 +73,232 @@ def _nanmin(vals):
     return min(xs) if xs else NAN
 
 
-# ---------------------------------------------------------------------------
-# Load + aggregate
-# ---------------------------------------------------------------------------
+def _corr(a, b):
+    pairs = [(x, y) for x, y in zip(a, b) if not _isnan(x) and not _isnan(y)]
+    n = len(pairs)
+    if n < 3:
+        return NAN
+    ax = [p[0] for p in pairs]
+    bx = [p[1] for p in pairs]
+    ma, mb = sum(ax) / n, sum(bx) / n
+    cov = sum((ax[i] - ma) * (bx[i] - mb) for i in range(n)) / n
+    sa = (sum((x - ma) ** 2 for x in ax) / n) ** 0.5
+    sb = (sum((y - mb) ** 2 for y in bx) / n) ** 0.5
+    return cov / (sa * sb) if sa * sb else NAN
+
+
+# --------------------------------------------------------------------------- load + aggregate
 
 def load_results(path):
-    """results.csv -> list of dicts. Every column float except subject_pos_name
-    (NaN where unparseable / 'nan' / empty)."""
+    """results.csv -> list of dicts (floats except subject_pos_name)."""
     rows = []
     with open(path, newline="") as f:
         for row in csv.DictReader(f):
-            d = {}
-            for k, v in row.items():
-                d[k] = v if k == "subject_pos_name" else _to_float(v)
-            rows.append(d)
+            rows.append({k: (v if k == "subject_pos_name" else _to_float(v))
+                         for k, v in row.items()})
     return rows
 
 
 def aggregate_by_layout(rows, subject=None):
-    """Group rows by (h_m, r_m, rel_az_deg) and aggregate across subjects.
-
-    If `subject` is given, restrict to that subject_pos_name first (so each
-    layout has a single row). Returns a list of layout dicts; mpjpe carries both
-    mean (for scoring) and worst (max); coverage carries mean (score) and min
-    (the gate uses worst-case)."""
+    """Group by (h_m, r_m, rel_az_deg), aggregate across subjects (NaN-aware mean;
+    plus mpjpe_worst and coverage_min for worst-case checks)."""
     if subject is not None:
         rows = [r for r in rows if r.get("subject_pos_name") == subject]
-
     groups = {}
     for r in rows:
         key = (round(r["h_m"], 6), round(r["r_m"], 6), round(r["rel_az_deg"], 6))
         groups.setdefault(key, []).append(r)
-
     layouts = []
     for key, grp in groups.items():
-        agg = {"h_m": key[0], "r_m": key[1], "rel_az_deg": key[2],
-               "n_subjects": len(grp)}
+        agg = {"h_m": key[0], "r_m": key[1], "rel_az_deg": key[2], "n_subjects": len(grp)}
         agg["mpjpe_mm"] = _nanmean([g.get("mpjpe_mm", NAN) for g in grp])
         agg["mpjpe_worst"] = _nanmax([g.get("mpjpe_mm", NAN) for g in grp])
         agg["coverage_min"] = _nanmin([g.get("detection_coverage", NAN) for g in grp])
         for c in _MEAN_COLS:
             agg[c] = _nanmean([g.get(c, NAN) for g in grp])
         layouts.append(agg)
-
     layouts.sort(key=lambda a: (a["h_m"], a["r_m"], a["rel_az_deg"]))
     return layouts
 
 
-# ---------------------------------------------------------------------------
-# Per-metric goodness in [0, 1]
-# ---------------------------------------------------------------------------
+# --------------------------------------------------------------------------- per-metric goodness
 
-def goodness_columns(layouts, cfg):
-    """For every metric named in ranking.categories, return:
-        goods : {metric: [goodness or None per layout]}
-        notes : {metric: human note} for metrics that dropped or didn't vary.
-    None = no data for that layout (NaN); a metric all-None has dropped out."""
+def _band(v, lo, hi):
+    """Clamped linear band: v<=lo -> 1.0, v>=hi -> 0.0 (lower is better)."""
+    if _isnan(v):
+        return None
+    span = (hi - lo) or 1.0
+    return max(0.0, min(1.0, (hi - v) / span))
+
+
+def _rank_goodness(raw, lower_better=True):
+    """Within-sweep rank in [0,1] (best->1, worst->0). Outlier-robust: only the
+    ORDER matters, so one huge value can't flatten the scale."""
+    present = [v for v in raw if not _isnan(v)]
+    m = len(present)
+    out = []
+    for v in raw:
+        if _isnan(v):
+            out.append(None)
+        elif m <= 1:
+            out.append(1.0)
+        else:
+            worse = (sum(1 for u in present if u > v) if lower_better
+                     else sum(1 for u in present if u < v))
+            out.append(worse / (m - 1))
+    return out
+
+
+def metric_goodness(raw_values, norm, cfg):
+    """raw metric values -> [0,1] goodness per layout, per the `norm` method."""
     rk = cfg["ranking"]
-    good_ref = float(rk.get("mpjpe_good_mm", 20.0))
-    bad_ref = float(rk.get("mpjpe_bad_mm", 200.0))
+    if norm == "pose_band":
+        lo, hi = (float(x) for x in rk["pose_band_mm"])
+        return [_band(v, lo, hi) for v in raw_values]
+    if norm == "absolute_band":
+        lo, hi = (float(x) for x in rk["absolute_band_mm"])
+        return [_band(v, lo, hi) for v in raw_values]
+    if norm == "rank":
+        return _rank_goodness(raw_values, lower_better=True)
+    if norm == "asis":
+        return [None if _isnan(v) else max(0.0, min(1.0, v)) for v in raw_values]
+    raise ValueError(f"unknown norm {norm!r}")
 
-    metric_names = []
-    for cat in rk["categories"].values():
-        metric_names.extend(cat["metrics"].keys())
 
-    goods, notes = {}, {}
-    for m in metric_names:
-        raw = [lay.get(m, NAN) for lay in layouts]
-        present = [v for v in raw if not _isnan(v)]
-        if not present:
-            goods[m] = [None] * len(layouts)
-            notes[m] = "dropped (no data this run)"
-            continue
-
-        if m in BAND_METRICS:
-            span = (bad_ref - good_ref) or 1.0
-            goods[m] = [None if _isnan(v)
-                        else max(0.0, min(1.0, (bad_ref - v) / span)) for v in raw]
-        elif m in RELATIVE_LOWER:
-            lo, hi = min(present), max(present)
-            if hi - lo < 1e-12:
-                goods[m] = [None if _isnan(v) else 1.0 for v in raw]
-                notes[m] = "present but constant (no differentiation)"
-            else:
-                goods[m] = [None if _isnan(v) else (hi - v) / (hi - lo) for v in raw]
-        else:  # already absolute 0-1, higher is better
-            goods[m] = [None if _isnan(v) else max(0.0, min(1.0, v)) for v in raw]
+def axis_scores(layouts, cfg):
+    """Return (per_layout_axes, axis_names, notes).
+    per_layout_axes[i] = {axis_name: score in [0,1] or None}."""
+    axes = cfg["ranking"]["axes"]
+    axis_names = list(axes.keys())
+    metric_goods, notes = {}, {}
+    for adef in axes.values():
+        for m, mdef in adef["metrics"].items():
+            raw = [lay.get(m, NAN) for lay in layouts]
+            present = [v for v in raw if not _isnan(v)]
+            if not present:
+                metric_goods[m] = [None] * len(layouts)
+                notes[m] = "dropped (no data this run)"
+                continue
+            metric_goods[m] = metric_goodness(raw, mdef["norm"], cfg)
             if max(present) - min(present) < 1e-12:
                 notes[m] = "present but constant (no differentiation)"
 
-    return goods, notes
-
-
-def category_scores(layouts, cfg):
-    """Return (per_layout_cats, cat_names, notes).
-    per_layout_cats[i] = {category_name: score in [0,1] or None}."""
-    rk = cfg["ranking"]
-    goods, notes = goodness_columns(layouts, cfg)
-    cat_names = list(rk["categories"].keys())
     per_layout = [{} for _ in layouts]
-
-    for cname, cdef in rk["categories"].items():
-        mweights = cdef["metrics"]
+    for aname, adef in axes.items():
         for i in range(len(layouts)):
             num = den = 0.0
-            for m, w in mweights.items():
-                g = goods.get(m, [None] * len(layouts))[i]
+            for m, mdef in adef["metrics"].items():
+                g = metric_goods[m][i]
                 if g is None:
                     continue
+                w = float(mdef["w"])
                 num += w * g
                 den += w
-            per_layout[i][cname] = (num / den) if den > 0 else None
+            per_layout[i][aname] = (num / den) if den > 0 else None
+    return per_layout, axis_names, notes
 
-    return per_layout, cat_names, notes
+
+# --------------------------------------------------------------------------- validity / composite / pareto
+
+def validity(layouts, cfg):
+    """Per layout (valid_bool, reason). Flags but does NOT exclude."""
+    v = cfg["ranking"]["validity"]
+    moff = float(v["max_registration_offset_mm"])
+    mjit = float(v["max_jitter_variance"])
+    cflo = float(v["coverage_floor"])
+    out = []
+    for lay in layouts:
+        reasons = []
+        off = lay.get("registration_offset_mm", NAN)
+        if not _isnan(off) and off > moff:
+            reasons.append(f"offset>{moff:g}")
+        jit = lay.get("jitter_variance", NAN)
+        if not _isnan(jit) and jit > mjit:
+            reasons.append(f"jitter>{mjit:g}")
+        cov = lay.get("coverage_min", lay.get("detection_coverage", NAN))
+        if not _isnan(cov) and cov < cflo:
+            reasons.append(f"coverage<{cflo:g}")
+        out.append((not reasons, ",".join(reasons) if reasons else "ok"))
+    return out
 
 
-# ---------------------------------------------------------------------------
-# Composite + Pareto
-# ---------------------------------------------------------------------------
-
-def composite(per_layout_cats, category_weights):
-    """Weighted sum of category scores, renormalized over the categories that
-    are present (non-None) for each layout."""
+def composite(per_layout_axes, axis_weights):
+    """Weighted sum of axis scores, renormalized over axes present per layout."""
     scores = []
-    for cats in per_layout_cats:
+    for axes in per_layout_axes:
         num = den = 0.0
-        for cname, w in category_weights.items():
-            c = cats.get(cname)
-            if c is None:
+        for aname, w in axis_weights.items():
+            a = axes.get(aname)
+            if a is None:
                 continue
-            num += w * c
+            num += w * a
             den += w
         scores.append((num / den) if den > 0 else NAN)
     return scores
 
 
-def pareto_front(per_layout_cats, cat_names, eps=1e-9):
-    """Flag layouts not dominated on ANY category (weight-free). Dominance is
-    computed over categories defined for ALL layouts. Returns (flags, used_cats)."""
-    used = [c for c in cat_names
-            if all(cats.get(c) is not None for cats in per_layout_cats)]
-    n = len(per_layout_cats)
+def pareto_front(per_layout_axes, axis_names, eps=1e-9):
+    """Flag layouts not dominated on ANY axis (weight-free), over axes defined for
+    all layouts. Returns (flags, used_axes)."""
+    used = [a for a in axis_names
+            if all(ax.get(a) is not None for ax in per_layout_axes)]
+    n = len(per_layout_axes)
     flags = [True] * n
     if not used:
         return flags, used
     for i in range(n):
-        bi = per_layout_cats[i]
+        bi = per_layout_axes[i]
         for j in range(n):
             if i == j:
                 continue
-            aj = per_layout_cats[j]
-            ge_all = all(aj[c] >= bi[c] - eps for c in used)
-            gt_any = any(aj[c] > bi[c] + eps for c in used)
-            if ge_all and gt_any:
-                flags[i] = False  # i is dominated by j
+            aj = per_layout_axes[j]
+            if (all(aj[a] >= bi[a] - eps for a in used)
+                    and any(aj[a] > bi[a] + eps for a in used)):
+                flags[i] = False
                 break
     return flags, used
 
 
-# ---------------------------------------------------------------------------
-# Gate + rank
-# ---------------------------------------------------------------------------
-
-def gate(layouts, coverage_floor):
-    """Drop layouts with NaN mpjpe or worst-case coverage below the floor."""
-    kept, dropped = [], []
-    for lay in layouts:
-        if _isnan(lay.get("mpjpe_mm")):
-            dropped.append((lay, "mpjpe NaN"))
-            continue
-        cov = lay.get("coverage_min", NAN)
-        if not _isnan(cov) and cov < coverage_floor:
-            dropped.append((lay, f"coverage {cov:.2f} < {coverage_floor}"))
-            continue
-        kept.append(lay)
-    return kept, dropped
-
-
-def rank(layouts, cfg, category_weights):
-    """Score, Pareto-flag, and sort layouts by composite (desc). Returns
-    (ranked, notes, pareto_cats)."""
-    per_cats, cat_names, notes = category_scores(layouts, cfg)
-    scores = composite(per_cats, category_weights)
-    flags, pareto_cats = pareto_front(per_cats, cat_names)
-
+def rank(layouts, cfg, axis_weights):
+    """Score, validity-flag, Pareto-flag, sort by composite desc. Returns
+    (ranked, notes, pareto_axes)."""
+    per_axis, axis_names, notes = axis_scores(layouts, cfg)
+    scores = composite(per_axis, axis_weights)
+    flags, pareto_axes = pareto_front(per_axis, axis_names)
+    val = validity(layouts, cfg)
     ranked = []
     for i, lay in enumerate(layouts):
-        ranked.append({**lay, "_cats": per_cats[i],
-                       "score": scores[i], "pareto": flags[i]})
+        ranked.append({**lay, "_axes": per_axis[i], "score": scores[i],
+                       "pareto": flags[i], "valid": val[i][0],
+                       "flag_reason": val[i][1]})
     ranked.sort(key=lambda r: (-1.0 if _isnan(r["score"]) else -r["score"]))
     for k, r in enumerate(ranked, 1):
         r["rank"] = k
-    return ranked, notes, pareto_cats
+    return ranked, notes, pareto_axes
 
 
-# ---------------------------------------------------------------------------
-# Weights / presets
-# ---------------------------------------------------------------------------
+# --------------------------------------------------------------------------- weights / presets
 
-def default_category_weights(cfg):
-    return {n: float(c["weight"]) for n, c in cfg["ranking"]["categories"].items()}
+def default_axis_weights(cfg):
+    return {n: float(a["weight"]) for n, a in cfg["ranking"]["axes"].items()}
 
 
 def preset_weights(cfg, preset):
-    names = list(cfg["ranking"]["categories"].keys())
-    vals = cfg["ranking"]["presets"][preset]
-    return {n: float(v) for n, v in zip(names, vals)}
+    names = list(cfg["ranking"]["axes"].keys())
+    return {n: float(v) for n, v in zip(names, cfg["ranking"]["presets"][preset])}
 
 
 def parse_weights(s, cfg):
-    """'accuracy=0.5,reliability=0.3,geometry=0.2' -> dict (missing -> default)."""
-    cw = default_category_weights(cfg)
+    cw = default_axis_weights(cfg)
     for part in s.split(","):
         part = part.strip()
-        if not part:
-            continue
-        k, _, v = part.partition("=")
-        cw[k.strip()] = float(v)
+        if part:
+            k, _, v = part.partition("=")
+            cw[k.strip()] = float(v)
     return cw
 
 
-# ---------------------------------------------------------------------------
-# Rendering
-# ---------------------------------------------------------------------------
+# --------------------------------------------------------------------------- rendering
 
 def _fmt(x):
     if _isnan(x):
@@ -319,109 +310,149 @@ def layout_label(lay):
     return f"h{_fmt(lay['h_m'])} r{_fmt(lay['r_m'])} az{int(round(lay['rel_az_deg']))}"
 
 
+def _jit_std(r):
+    j = r.get("jitter_variance")
+    return _fmt(math.sqrt(j)) if not _isnan(j) else "nan"
+
+
 def format_table(ranked, top_n):
-    hdr = (f"{'#':>2}  {'layout':<16} {'score':>6}  {'acc':>5} {'rel':>5} "
-           f"{'geo':>5}  {'mpjpe':>7} {'visB':>5} {'cov':>5} {'uniqB':>5}  P")
+    hdr = (f"{'#':>3} {'layout':<15} {'V':>1} {'score':>6}  "
+           f"{'pose':>5} {'abs':>5} {'stab':>5}  "
+           f"{'aligned':>7} {'absMPJPE':>9} {'offset':>7} {'idDrp':>5} {'jitStd':>6}  P")
     lines = [hdr, "-" * len(hdr)]
     for r in ranked[:top_n]:
-        c = r["_cats"]
+        a = r["_axes"]
         def cs(name):
-            v = c.get(name)
+            v = a.get(name)
             return "  -  " if v is None else f"{v:5.3f}"
         lines.append(
-            f"{r['rank']:>2}  {layout_label(r):<16} {r['score']:6.3f}  "
-            f"{cs('accuracy')} {cs('reliability')} {cs('geometry')}  "
-            f"{_fmt(r['mpjpe_mm']):>7} "
-            f"{_fmt(r.get('joint_visibility_both')):>5} "
-            f"{_fmt(r.get('detection_coverage')):>5} "
-            f"{_fmt(r.get('unique_contribution_cam_b')):>5}  "
-            f"{'*' if r['pareto'] else ' '}")
+            f"{r['rank']:>3} {layout_label(r):<15} {'Y' if r['valid'] else 'x':>1} "
+            f"{r['score']:6.3f}  {cs('pose_fidelity')} {cs('absolute_placement')} "
+            f"{cs('stability')}  {_fmt(r.get('mpjpe_aligned_mm')):>7} "
+            f"{_fmt(r.get('mpjpe_mm')):>9} {_fmt(r.get('registration_offset_mm')):>7} "
+            f"{_fmt(r.get('id_drops')):>5} {_jit_std(r):>6}  {'*' if r['pareto'] else ' '}")
     return "\n".join(lines)
 
 
-def render(ranked, notes, pareto_cats, kept, dropped, cfg, args, cov_floor):
+def mounting_candidates(ranked, n=3):
+    """Top n layouts that are BOTH valid and Pareto-optimal (fall back to valid)."""
+    cands = [r for r in ranked if r["valid"] and r["pareto"]]
+    if len(cands) < n:
+        cands += [r for r in ranked if r["valid"] and r not in cands]
+    return cands[:n]
+
+
+def mounting_lines(ranked, n=3):
     out = []
-    out.append(f"Ranked {len(kept)} camera position(s) "
-               f"(grouped by h/r/az{', subject=' + args.subject if args.subject else ''}).")
-    out.append(f"composite = " + " + ".join(
-        f"{w:g}*{n}" for n, w in _active_weights.items()) + "   (P = Pareto-optimal)")
+    cands = mounting_candidates(ranked, n)
+    if not cands:
+        return ["  (no valid layouts — every layout was flagged; check the sweep / thresholds)"]
+    for idx, r in enumerate(cands, 1):
+        h, rr, az = r["h_m"], r["r_m"], int(round(r["rel_az_deg"]))
+        out.append(f"  {idx}. h={h:g}m, r={rr:g}m, az={az}°   "
+                   f"[composite {r['score']:.3f} | pose {_fmt(r.get('mpjpe_aligned_mm'))}mm | "
+                   f"abs {_fmt(r.get('mpjpe_mm'))}mm | offset {_fmt(r.get('registration_offset_mm'))}mm]")
+        out.append(f"     → mount both cameras at {h:g} m height, {rr:g} m from the subject, "
+                   f"separated by {az}° around the subject")
+    return out
+
+
+def insight_line(layouts):
+    aln = [l.get("mpjpe_aligned_mm", NAN) for l in layouts]
+    rt = _corr(aln, [l.get("tilt_deg", NAN) for l in layouts])
+    rh = _corr(aln, [l.get("h_m", NAN) for l in layouts])
+    rr = _corr(aln, [l.get("r_m", NAN) for l in layouts])
+    msg = []
+    if not _isnan(rt) and rt > 0.2:
+        msg.append("lower cameras track better (less tilt)")
+    if not _isnan(rr) and abs(rr) < 0.2:
+        msg.append("radius ~irrelevant to accuracy")
+    tail = ("; " + "; ".join(msg)) if msg else ""
+    return (f"Insight: aligned-MPJPE correlates tilt r={rt:+.2f}, height r={rh:+.2f}, "
+            f"radius r={rr:+.2f}{tail}.")
+
+
+def render(ranked, notes, pareto_axes, cfg, args):
+    out = []
+    n_valid = sum(1 for r in ranked if r["valid"])
+    out.append(f"Ranked {len(ranked)} camera position(s) "
+               f"(grouped by h/r/az{', subject=' + args.subject if args.subject else ''}); "
+               f"{n_valid} valid, {len(ranked) - n_valid} flagged.")
+    out.append("composite = " + " + ".join(f"{w:g}*{n}" for n, w in _active_weights.items())
+               + "   (V=valid, P=Pareto-optimal)")
     out.append("")
     out.append(format_table(ranked, args.top))
     out.append("")
 
+    # Pareto frontier members.
     pareto = [r for r in ranked if r["pareto"]]
-    if pareto_cats:
-        names = ", ".join(layout_label(r) for r in pareto)
-        out.append(f"Pareto-optimal over [{', '.join(pareto_cats)}]: {names}")
-        if len(pareto) == 1 and ranked[0]["pareto"]:
-            out.append(f"  -> {layout_label(ranked[0])} is the SOLE Pareto winner: "
-                       f"best under ANY weighting (weight-independent).")
+    if pareto_axes:
+        out.append(f"Pareto frontier over [{', '.join(pareto_axes)}] "
+                   f"({len(pareto)} layouts):")
+        for r in pareto:
+            flag = "" if r["valid"] else f"  [flagged: {r['flag_reason']}]"
+            out.append(f"  {layout_label(r):<15} valid={r['valid']!s:<5} "
+                       f"pose={_fmt(r.get('mpjpe_aligned_mm'))}mm "
+                       f"abs={_fmt(r.get('mpjpe_mm'))}mm{flag}")
     else:
-        out.append("Pareto: not enough common categories to compute.")
+        out.append("Pareto: not enough common axes to compute.")
     out.append("")
 
     # Preset sensitivity.
     out.append("Preset sensitivity (top-3 by composite):")
     tops = {}
     for pname in cfg["ranking"]["presets"]:
-        r2, _, _ = rank(kept, cfg, preset_weights(cfg, pname))
+        r2, _, _ = rank([dict(l) for l in ranked], cfg, preset_weights(cfg, pname))
         tops[pname] = [layout_label(x) for x in r2[:3]]
-        out.append(f"  {pname:<11} {'  >  '.join(tops[pname])}")
+        out.append(f"  {pname:<10} {'  >  '.join(tops[pname])}")
     winners = {v[0] for v in tops.values()}
     out.append(f"  => #1 is {'STABLE' if len(winners) == 1 else 'WEIGHT-SENSITIVE'} "
                f"across presets ({', '.join(sorted(winners))}).")
+    out.append("")
 
-    drop_notes = {m: n for m, n in notes.items()}
+    # The actionable output.
+    out.append(insight_line(ranked))
+    out.append("")
+    out.append("Physical mounting candidates (top valid + Pareto-optimal):")
+    out.extend(mounting_lines(ranked, 3))
+
+    drop_notes = {m: n for m, n in notes.items() if "constant" in n or "dropped" in n}
     if drop_notes:
         out.append("")
-        out.append("Metric notes:")
+        out.append("Metric notes (report-only columns / no signal this run):")
         for m, n in drop_notes.items():
             out.append(f"  {m}: {n}")
-
-    if dropped:
-        out.append("")
-        out.append(f"Gated out ({len(dropped)}, coverage_floor={cov_floor}):")
-        for lay, why in dropped:
-            out.append(f"  {layout_label(lay)}: {why}")
     return "\n".join(out)
 
 
 def write_csv(path, ranked):
     os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
-    cols = ["rank", "h_m", "r_m", "rel_az_deg", "score",
-            "accuracy", "reliability", "geometry", "pareto",
-            "mpjpe_mm", "mpjpe_worst", "detection_coverage", "coverage_min",
-            "pck50", "joint_visibility_both", "unique_contribution_cam_b",
-            "jitter_variance", "id_drops", "convergence_angle_deg", "tilt_deg",
-            "n_subjects"]
+    axis_cols = ["pose_fidelity", "absolute_placement", "stability"]
+    cols = (["rank", "h_m", "r_m", "rel_az_deg", "score", "valid", "flag_reason", "pareto"]
+            + axis_cols
+            + ["mpjpe_aligned_mm", "mpjpe_mm", "registration_offset_mm",
+               "id_drops", "jitter_variance", "joint_visibility_both",
+               "convergence_angle_deg", "tilt_deg", "n_subjects"])
     with open(path, "w", newline="") as f:
         w = csv.writer(f)
         w.writerow(cols)
         for r in ranked:
-            c = r["_cats"]
-            row = []
-            for col in cols:
-                if col in ("accuracy", "reliability", "geometry"):
-                    row.append(c.get(col))
-                else:
-                    row.append(r.get(col))
-            w.writerow(row)
+            a = r["_axes"]
+            w.writerow([a.get(c) if c in axis_cols else r.get(c) for c in cols])
 
 
-# Set by main() so render() can print the active weights.
 _active_weights = {}
 
 
 def main():
-    ap = argparse.ArgumentParser(description="Rank camera positions from results.csv")
+    ap = argparse.ArgumentParser(description="Rank camera positions from results.csv (v2)")
     ap.add_argument("--results", default=os.path.join(_REPO, "results", "results.csv"))
     ap.add_argument("--config", default=os.path.join(_REPO, "config", "experiment.yaml"))
     ap.add_argument("--preset", default="balanced",
-                    help="category-weight preset (from experiment.yaml ranking.presets)")
+                    help="axis-weight preset (experiment.yaml ranking.presets)")
     ap.add_argument("--weights", default=None,
-                    help="override, e.g. accuracy=0.5,reliability=0.3,geometry=0.2")
-    ap.add_argument("--coverage-floor", type=float, default=None)
-    ap.add_argument("--top", type=int, default=10)
+                    help="override, e.g. pose_fidelity=0.6,absolute_placement=0.1,stability=0.3")
+    ap.add_argument("--top", type=int, default=15)
     ap.add_argument("--subject", default=None,
                     help="rank within one subject_pos_name instead of aggregating")
     ap.add_argument("--out", default=None,
@@ -431,8 +462,6 @@ def main():
     with open(args.config) as f:
         cfg = yaml.safe_load(f)
     rk = cfg["ranking"]
-    cov_floor = (args.coverage_floor if args.coverage_floor is not None
-                 else float(rk.get("coverage_floor", 0.8)))
 
     if not os.path.exists(args.results):
         print(f"rank: results file not found: {args.results}")
@@ -443,24 +472,18 @@ def main():
         return
 
     layouts = aggregate_by_layout(rows, subject=args.subject)
-    kept, dropped = gate(layouts, cov_floor)
-    if not kept:
-        print(f"rank: no layouts pass the gate "
-              f"(coverage_floor={cov_floor}, need non-NaN mpjpe).")
-        return
-
     if args.weights:
         cw = parse_weights(args.weights, cfg)
     elif args.preset in rk["presets"]:
         cw = preset_weights(cfg, args.preset)
     else:
-        cw = default_category_weights(cfg)
+        cw = default_axis_weights(cfg)
 
     global _active_weights
     _active_weights = cw
 
-    ranked, notes, pareto_cats = rank(kept, cfg, cw)
-    print(render(ranked, notes, pareto_cats, kept, dropped, cfg, args, cov_floor))
+    ranked, notes, pareto_axes = rank(layouts, cfg, cw)
+    print(render(ranked, notes, pareto_axes, cfg, args))
 
     if args.out:
         write_csv(args.out, ranked)

@@ -96,37 +96,44 @@ zed_helper_attrs:
 
 # --- Layout ranking (analysis/rank.py) ---------------------------------------
 # Post-processes results/results.csv to rank camera positions. Does NOT touch the
-# sim. See README "Ranking". Each metric is scored to a 0-1 "goodness", grouped
-# into 3 categories, then combined. Metrics that are NaN across the sweep (e.g.
-# jitter/id_drops on a static pose) drop out automatically. rank.py knows metric
-# directions (mpjpe_mm/jitter_variance/id_drops = lower better; the rest = higher
-# better and already 0-1).
+# sim. See README "Ranking". Tuned to the full warehouse+motion sweep: most layouts
+# fail fusion registration (absolute MPJPE -> metres), so we (a) FLAG failures but
+# keep ranking everything, (b) score on the metrics that actually carry signal, and
+# (c) treat pose-fidelity and absolute-placement as separate Pareto axes.
 ranking:
-  coverage_floor: 0.8     # hard gate: drop layouts whose worst-case detection_coverage < this
-  mpjpe_good_mm:  20.0    # mpjpe at/below this -> accuracy goodness 1.0 (experiment acceptance band)
-  mpjpe_bad_mm:   200.0   # mpjpe at/above this -> accuracy goodness 0.0
+  # Validity FLAG (layouts are kept + ranked, just marked invalid if any threshold trips).
+  validity:
+    max_registration_offset_mm: 300.0     # fused<->GT global offset above this = registration failed
+    max_jitter_variance:        50000.0   # ~224 mm std; above this = tracking blow-up
+    coverage_floor:             0.8        # detection_coverage below this = unreliable detect
 
-  # Per-metric weights WITHIN each category (renormalized over non-NaN metrics).
-  categories:
-    accuracy:
+  # MPJPE goodness bands (mm): value<=good -> 1.0, value>=bad -> 0.0 (clamped, linear).
+  pose_band_mm:     [20.0, 200.0]    # aligned MPJPE (true pose) acceptance band
+  absolute_band_mm: [50.0, 1000.0]   # absolute MPJPE (world placement) band
+
+  # Three axes. Each metric -> 0-1 goodness via `norm`:
+  #   pose_band | absolute_band  = clamped linear band (interpretable, for the MPJPE family)
+  #   rank                       = within-sweep rank (outlier-robust; for heavy-tailed metrics)
+  #   asis                       = value used directly (already 0-1, higher better)
+  # Within-axis weights are renormalized over the metrics present (non-NaN) each run.
+  axes:
+    pose_fidelity:        # calibration-invariant true pose error
       weight: 0.50
       metrics:
-        mpjpe_aligned_mm: 0.80   # true pose accuracy (registration offset removed)
-        pck50:            0.20
-    reliability:
-      weight: 0.30
-      metrics:
-        detection_coverage: 0.50
-        jitter_variance:    0.35
-        id_drops:           0.15
-    geometry:
+        mpjpe_aligned_mm: {w: 1.0, norm: pose_band}
+    absolute_placement:   # world-position accuracy (includes registration offset)
       weight: 0.20
       metrics:
-        joint_visibility_both:     0.70
-        unique_contribution_cam_b: 0.30
+        mpjpe_mm: {w: 1.0, norm: absolute_band}
+    stability:            # temporal tracking reliability
+      weight: 0.30
+      metrics:
+        id_drops:        {w: 0.5, norm: rank}
+        jitter_variance: {w: 0.5, norm: rank}
 
-  # Category-weight presets [accuracy, reliability, geometry] for sensitivity.
+  # Axis-weight presets [pose_fidelity, absolute_placement, stability] for sensitivity.
   presets:
-    balanced:   [0.50, 0.30, 0.20]
-    accuracy:   [0.70, 0.20, 0.10]
-    robustness: [0.34, 0.33, 0.33]
+    balanced:  [0.50, 0.20, 0.30]
+    pose:      [0.70, 0.10, 0.20]
+    absolute:  [0.20, 0.60, 0.20]
+    stability: [0.30, 0.10, 0.60]
