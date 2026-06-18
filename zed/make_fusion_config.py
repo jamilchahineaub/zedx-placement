@@ -205,28 +205,22 @@ def generate(template_path, out_path, h, r, rel_az_deg,
     with open(template_path) as f:
         cfg = json.load(f)
 
-    # DOUBLED-PITCH poses — empirical calibration against the Isaac virtual
-    # cameras (2026-06-11, four controlled runs at tilt 11.3deg / r 2.5):
-    # fusion applies pitch = file_pitch + tilt (linear, slope 1):
-    #     file pitch -tilt  -> applied 0      -> +sin(tilt)*range offset (0.48m)
-    #     file pitch  0     -> applied +tilt  -> double offset (0.96m)
-    # (initial_world_transform on the senders is ignored for stream input, and
-    # override_gravity / enable_imu_fusion change nothing — the +tilt addition
-    # comes from the SDK reconciling the pose with the virtual IMU's "level"
-    # gravity.) To get applied = -tilt, write pitch = -2*tilt: aim at the
-    # mirror of the real aim point through the camera's horizontal plane.
-    def _doubled_aim(pos):
-        real_aim_z = subject_pos[2] + aim_height_m
-        return [subject_pos[0], subject_pos[1], pos[2] - 2.0 * (pos[2] - real_aim_z)]
+    # TRUE-aim poses. Each camera looks at the real aim point (hip height above the
+    # subject). zed_fusion subscribes with override_gravity=True, so Fusion applies
+    # these poses VERBATIM as absolute world poses — no IMU re-leveling, so the true
+    # downward pitch is honored and the pose generalizes across all tilts.
+    # (Previously the SDK re-levelled each camera to its "level" virtual IMU, which
+    # forced an empirical doubled-pitch hack tuned at one tilt — removed.)
+    real_aim = [subject_pos[0], subject_pos[1], subject_pos[2] + aim_height_m]
 
     pos_a = camera_position(cam_a_az, r, h, subject_pos)
-    R_a   = proper_rotation_world_from_cam(pos_a, _doubled_aim(pos_a))
+    R_a   = proper_rotation_world_from_cam(pos_a, real_aim)
     zpos_a, zR_a = convert_isaac_to_zed_pose(pos_a, R_a)
     cfg["1001"]["FusionConfiguration"]["pose"] = make_pose_string(zpos_a, zR_a)
 
     # Camera B
     pos_b = camera_position(cam_a_az + rel_az_deg, r, h, subject_pos)
-    R_b   = proper_rotation_world_from_cam(pos_b, _doubled_aim(pos_b))
+    R_b   = proper_rotation_world_from_cam(pos_b, real_aim)
     zpos_b, zR_b = convert_isaac_to_zed_pose(pos_b, R_b)
     cfg["1002"]["FusionConfiguration"]["pose"] = make_pose_string(zpos_b, zR_b)
 

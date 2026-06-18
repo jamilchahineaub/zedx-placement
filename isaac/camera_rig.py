@@ -169,8 +169,7 @@ def evaluate_layout(h, r, rel_az_deg, subject_pos, cfg,
         if mode == "fusion":
             res = run_pipeline.run_zed_fusion(
                 fusion_cfg_path, layout_id, machine_cfg,
-                duration=capture_duration,
-                tilt_deg=tilt_angle(h, r, cfg["aim_height_m"]))
+                duration=capture_duration)
             pred_csv = res["csv"]
             meta_path = os.path.join(repo, "results", "layouts",
                                      f"zed_pred_{layout_id}_meta.json")

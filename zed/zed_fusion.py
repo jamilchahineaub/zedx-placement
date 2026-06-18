@@ -60,13 +60,6 @@ def main():
     ap.add_argument("--conf", type=int, default=20)
     ap.add_argument("--first-frame-timeout", type=float, default=20.0)
     ap.add_argument("--open-timeout", type=float, default=30.0)
-    ap.add_argument("--tilt-deg", type=float, default=0.0,
-                    help="cameras' downward tilt. Fusion LEVELS each camera "
-                         "(Isaac's virtual IMU reports no tilt, so the file "
-                         "pose's pitch is discarded) — consume the tilt at the "
-                         "sender instead via initial_world_transform so the "
-                         "sender world is gravity-aligned and yaw-only poses "
-                         "are exact.")
     ap.add_argument("--machine", default="laptop")
     args = ap.parse_args()
 
@@ -88,20 +81,11 @@ def main():
     pt_params = sl.PositionalTrackingParameters()
     pt_params.set_as_static = True          # sample uses static senders
     # Deterministic sender frame: no IMU input (Isaac's virtual IMU reports the
-    # camera as level regardless of its actual tilt).
+    # camera as level regardless of its actual tilt). The camera poses are applied
+    # by Fusion VERBATIM via subscribe(..., override_gravity=True) below, so no
+    # sender-side tilt compensation is needed (this is what the old doubled-pitch /
+    # set_initial_world_transform hacks were working around).
     pt_params.enable_imu_fusion = False
-    # Gravity-align the sender world: rotate the initial camera pose down by
-    # the known tilt (Rx(-tilt)) so published keypoints are in a level world.
-    # Fusion then only needs yaw + translation from the config poses — which is
-    # all it applies anyway (it discards file pitch, trusting the level IMU).
-    if args.tilt_deg:
-        init_pose = sl.Transform()
-        # Sign verified empirically (2026-06-11): -tilt DOUBLED the constant
-        # vertical offset (0.48m -> 0.96m at tilt 11.3deg/r 2.5); +tilt cancels it.
-        init_pose.set_euler_angles(args.tilt_deg, 0.0, 0.0, radian=False)
-        pt_params.set_initial_world_transform(init_pose)
-        print(f"zed_fusion: sender world gravity-aligned (tilt {args.tilt_deg:.1f} deg)",
-              flush=True)
 
     body_params = sl.BodyTrackingParameters()
     body_params.detection_model = zed_single._MODELS[args.model]
@@ -110,7 +94,7 @@ def main():
     body_params.enable_tracking = False     # fusion does the tracking
 
     senders = {}          # runtime_serial -> sl.Camera
-    poses = {}            # runtime_serial -> conf.pose (matched by PORT)
+    poses = {}            # runtime_serial -> (conf.pose, override_gravity) matched by PORT
     for conf in confs:
         port = serial_to_port.get(conf.serial_number)
         if port is None:
@@ -143,7 +127,10 @@ def main():
             sys.exit(1)
         zed.start_publishing(comm)
         senders[runtime_serial] = zed
-        poses[runtime_serial] = conf.pose
+        # override_gravity=True => Fusion applies this pose as the ABSOLUTE world
+        # pose (no IMU re-leveling). Honors the template's override_gravity field;
+        # defaults True since Isaac's virtual IMU is unreliable (reports level).
+        poses[runtime_serial] = (conf.pose, bool(getattr(conf, "override_gravity", True)))
 
     # --- fusion ---
     init_fusion = sl.InitFusionParameters()
@@ -159,12 +146,12 @@ def main():
             zed.retrieve_bodies(warm)
 
     subscribed = 0
-    for runtime_serial, pose in poses.items():
+    for runtime_serial, (pose, override_gravity) in poses.items():
         uuid = sl.CameraIdentifier()
         uuid.serial_number = runtime_serial
         sub_comm = sl.CommunicationParameters()
         sub_comm.set_for_shared_memory()
-        status = fusion.subscribe(uuid, sub_comm, pose)
+        status = fusion.subscribe(uuid, sub_comm, pose, override_gravity)
         if status != sl.FUSION_ERROR_CODE.SUCCESS:
             print(f"RUN_FAILED fusion.subscribe serial {runtime_serial}: {status}")
         else:

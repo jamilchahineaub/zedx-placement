@@ -165,16 +165,14 @@ def run_zed_single(port, layout_id, machine_cfg, duration=20.0, model="accurate"
 
 
 def run_zed_fusion(fusion_config, layout_id, machine_cfg, duration=20.0,
-                   model="accurate", conf=20, overall_timeout=None,
-                   tilt_deg=0.0):
+                   model="accurate", conf=20, overall_timeout=None):
     """Run zed/zed_fusion.py. Returns dict(rc, rows, csv)."""
     os.makedirs(LOGS_DIR, exist_ok=True)
     log_path = os.path.join(LOGS_DIR, f"zed_fusion_{layout_id}_{_ts()}.log")
     cmd = [machine_cfg.get("zed_python", "python3"),
            os.path.join(REPO, "zed", "zed_fusion.py"),
            "--fusion-config", fusion_config, "--layout-id", layout_id,
-           "--duration", str(duration), "--model", model, "--conf", str(conf),
-           "--tilt-deg", str(tilt_deg)]
+           "--duration", str(duration), "--model", model, "--conf", str(conf)]
     if overall_timeout is None:
         overall_timeout = duration + 150  # two opens + two model loads + margin
     print(f"pipeline: starting zed_fusion (capture {duration}s, "
@@ -316,13 +314,9 @@ def main():
                      "--r", str(args.r), "--rel-az", str(args.rel_az)],
                     cwd=REPO, capture_output=True, text=True)
                 print(gen.stdout + gen.stderr, flush=True)
-            import math
-            tilt = math.degrees(math.atan(
-                (args.h - cfg.get("aim_height_m", 1.0)) / args.r))
             fres = run_zed_fusion(fusion_cfg_path, args.layout_id, machine_cfg,
                                   duration=args.capture_duration,
-                                  model=args.model, conf=args.conf,
-                                  tilt_deg=tilt)
+                                  model=args.model, conf=args.conf)
             result["fusion"] = fres
             ok = fres["rc"] == 0 and fres["rows"] > 0
             reason = f"zed_fusion rc={fres['rc']} rows={fres['rows']}"

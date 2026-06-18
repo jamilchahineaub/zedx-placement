@@ -120,7 +120,7 @@ machine needs internet. To change the scene, re-save into `assets/test.usd` and 
 | `subject_pos_name` | subject position used |
 | `mpjpe_mm` | absolute mean per-joint error, mm (includes the global fused↔GT frame offset; lower better) |
 | `mpjpe_aligned_mm` | **true pose accuracy** — MPJPE after removing the per-frame global translation (registration offset). This is what ranking scores accuracy on, since the absolute offset is a fusion-calibration artifact, not a placement property |
-| `registration_offset_mm` | the global fused↔GT frame translation (diagnostic). If large/variable, the fusion pose calibration is off — but `mpjpe_aligned_mm` already factors it out |
+| `registration_offset_mm` | the global fused↔GT frame translation (diagnostic). `zed_fusion` subscribes with `override_gravity=True` so camera poses are applied verbatim — this should stay small and uniform across tilts; large/tilt-growing values indicate a pose/calibration problem. `mpjpe_aligned_mm` factors it out regardless |
 | `pck30`, `pck50` | fraction of joints within 30 / 50 mm (computed on the absolute error) |
 | `detection_coverage` | fraction of frames a body was detected |
 | `joint_visibility_cam_a/b/either` | fraction of joints in each camera's FOV+range |
@@ -190,4 +190,7 @@ is driven by **camera height/tilt** (lower is better), not radius.
 - Use `--model accurate --conf 20` (defaults); `fast` doesn't detect the render.
 - The ground-truth CSV is written at episode end — don't close the viewport mid-run.
 - `results/` is append-only. `reference_scene` (test.usd) is never written back to.
-- Static (procedural room, frozen pose) calibrated fusion: ~112 mm MPJPE.
+- **Fusion poses are applied verbatim** via `fusion.subscribe(..., override_gravity=True)`
+  in `zed/zed_fusion.py` (a ZED-SDK pose flag — *not* Isaac physics gravity). This replaced
+  an empirical doubled-pitch hack that only held at one tilt; poses now generalize across
+  tilt. Confirm with `registration_offset_mm` staying small/uniform after a re-sweep.
