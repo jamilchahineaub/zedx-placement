@@ -179,9 +179,42 @@ def polyline_pos(pts, s):
     return pts[-1]
 
 
-def apply_walk_path(stage, character_prim, cfg, cover_s=None):
+def _root_to_pelvis_offset(stage, character_prim, skel_prim):
+    """Horizontal (x,y) offset of the skeleton's pelvis from the character root at
+    rest. We drive the ROOT along the path minus this offset so the PELVIS (what
+    gt_logger bins and ZED tracks) traces the box centred on the aim. (0,0) if it
+    can't be measured."""
+    from pxr import Usd, UsdGeom, UsdSkel
+    try:
+        skel = UsdSkel.Skeleton(skel_prim)
+        joints = [str(j).split("/")[-1] for j in (skel.GetJointsAttr().Get() or [])]
+        pidx = next((i for i, n in enumerate(joints)
+                     if "pelvis" in n.lower() or n.lower() == "hips"), None)
+        if pidx is None:
+            print("character_motion: no pelvis joint -> walk path NOT pelvis-centred")
+            return 0.0, 0.0
+        cache = UsdSkel.Cache()
+        for prim in stage.Traverse():
+            if prim.IsA(UsdSkel.Root):
+                cache.Populate(UsdSkel.Root(prim), Usd.PrimDefaultPredicate)
+                break
+        query = cache.GetSkelQuery(skel)
+        xfc = UsdGeom.XformCache(Usd.TimeCode.Default())
+        world = query.ComputeJointWorldTransforms(xfc)
+        if not world or pidx >= len(world):
+            return 0.0, 0.0
+        pt = world[pidx].ExtractTranslation()
+        rt = xfc.GetLocalToWorldTransform(character_prim).ExtractTranslation()
+        return float(pt[0] - rt[0]), float(pt[1] - rt[1])
+    except Exception as e:
+        print(f"character_motion: pelvis-offset measurement failed ({e}); path not centred")
+        return 0.0, 0.0
+
+
+def apply_walk_path(stage, character_prim, skel_prim, cfg, cover_s=None):
     """Time-sample the CHARACTER PRIM translate along the serpentine so gt_logger's
-    XformCache(timecode) logs the moving root. Walks on the floor (z = current z)."""
+    XformCache(timecode) logs the moving root. The path is shifted by the
+    root->pelvis offset so the PELVIS traces the box (centred on the aim)."""
     from pxr import Usd, UsdGeom, Gf
 
     mcfg = (cfg.get("motion") or {})
@@ -192,6 +225,9 @@ def apply_walk_path(stage, character_prim, cfg, cover_s=None):
     speed = float(wk.get("speed_m_s", 0.8))
     pts = serpentine_polyline(cfg)
 
+    # Measure BEFORE clearing the static translate (root still at its rest position).
+    offx, offy = _root_to_pelvis_offset(stage, character_prim, skel_prim)
+
     xform = UsdGeom.Xformable(character_prim)
     # Pure time samples (no static default) — clear any static translate authored by
     # _load_character so we don't mix a default with the time samples.
@@ -201,13 +237,13 @@ def apply_walk_path(stage, character_prim, cfg, cover_s=None):
     n_total = int(round(cover_s * fps))
     for f in range(n_total + 1):
         x, y = polyline_pos(pts, speed * (f / fps))
-        op.Set(Gf.Vec3d(float(x), float(y), 0.0), Usd.TimeCode(f))
+        op.Set(Gf.Vec3d(float(x - offx), float(y - offy), 0.0), Usd.TimeCode(f))
 
     stage.SetTimeCodesPerSecond(fps)
     stage.SetStartTimeCode(0)
     stage.SetEndTimeCode(n_total)
     print(f"character_motion: walk serpentine {len(pts)} waypoints, speed {speed} m/s, "
-          f"cover {cover_s:g}s ({n_total} samples)")
+          f"cover {cover_s:g}s ({n_total} samples), pelvis-offset=({offx:.2f},{offy:.2f})")
     return n_total
 
 
@@ -222,5 +258,5 @@ def apply_motion(stage, character_prim, skel_prim, cfg):
                else float((cfg.get("motion") or {}).get("cover_s", 60.0)))
     apply_inplace_animation(stage, skel_prim, cfg, cover_s=cover_s)
     if mode == "walk":
-        apply_walk_path(stage, character_prim, cfg, cover_s=cover_s)
+        apply_walk_path(stage, character_prim, skel_prim, cfg, cover_s=cover_s)
     return mode

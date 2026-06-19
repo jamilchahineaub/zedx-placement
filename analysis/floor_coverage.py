@@ -261,6 +261,9 @@ def main():
     ap.add_argument("--r", type=float, default=None)
     ap.add_argument("--rel-az", type=float, default=None)
     ap.add_argument("--no-png", action="store_true")
+    ap.add_argument("--auto-frame", action="store_true",
+                    help="frame the grid on the actual pelvis trajectory bbox (+margin) "
+                         "instead of the config workspace box")
     args = ap.parse_args()
 
     cfg = yaml.safe_load(open(args.config))
@@ -268,6 +271,20 @@ def main():
     if not os.path.exists(gt):
         print(f"floor_coverage: no ground truth for {args.layout_id} ({gt})")
         return
+
+    if args.auto_frame:
+        pel, _ = load_gt_pelvis_per_frame(gt)
+        if pel:
+            xs = [p[1] for p in pel]
+            ys = [p[2] for p in pel]
+            mrg = 0.5
+            cfg["workspace"] = {
+                "center": [(min(xs) + max(xs)) / 2.0, (min(ys) + max(ys)) / 2.0],
+                "size_m": [max(max(xs) - min(xs), 1.0) + 2 * mrg,
+                           max(max(ys) - min(ys), 1.0) + 2 * mrg]}
+            print(f"floor_coverage: auto-framed grid to pelvis bbox "
+                  f"center={cfg['workspace']['center']} size={cfg['workspace']['size_m']}")
+
     cells, g, info = compute_floor_coverage(args.layout_id, cfg, args.results_dir, args.conf)
     tot_n = sum(d["n"] for d in cells.values())
     tot_det = sum(d["det"] for d in cells.values())
