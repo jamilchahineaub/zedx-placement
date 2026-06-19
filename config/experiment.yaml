@@ -62,12 +62,17 @@ motion:
 # Walk path + floor-coverage grid (used by character_motion walk mode and floor_coverage.py).
 workspace:
   center:   [0.0, 0.0]   # box centre on the floor (m), world X,Y
-  size_m:   [5.0, 5.0]   # box extent (m): the human walks within, the heatmap spans this
-grid_cell_m: 0.5         # floor-coverage cell size (5x5 box / 0.5 = 10x10 cells)
+  size_m:   [4.0, 4.0]   # box extent (m) = the area you intend to MONITOR. The human walks
+                         # within it and the heatmap spans it. SAME box for every layout so the
+                         # comparison is fair (same task); set this to your real monitored area.
+                         # 4x4 (+-2 m) discriminates across radii without rigging against close
+                         # rings the way 5x5 did (person walked past r=1.5 cameras).
+grid_cell_m: 0.5         # floor-coverage cell size (4x4 box / 0.5 = 8x8 cells)
 walk:
   speed_m_s:        1.5  # walking speed along the serpentine (faster = full box covered in
                          # less SIM time, so a fixed ZED capture window sees a whole sweep)
-  serpentine_rows:  6    # number of lengthwise passes across the box (more = finer y-coverage)
+  serpentine_rows:  8    # lengthwise passes across the box (>= box/cell so every cell-row is
+                         # walked: 4 m box / 0.5 cell -> 8 rows fills the grid, no empty stripes)
   margin_m:         0.4  # keep the path this far inside the box edges
   cover_s:          90.0 # author the path over this many seconds (>= capture window)
 
