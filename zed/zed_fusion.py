@@ -177,6 +177,7 @@ def main():
     # so the watchdog only fires if the loop is actually STUCK: no first frame
     # within the window, or duration overrun by 15 s (blocked grab).
     rows = []
+    frame_log = []        # (frame_idx, wall_clock, n_bodies) for EVERY grabbed frame
     announced = False
     start = time.time()
     state = {"frames": 0, "frames_with_bodies": 0, "stream_dead": False}
@@ -216,6 +217,7 @@ def main():
             fusion.retrieve_bodies(fused, rt)
             state["frames"] += 1
             wall = time.time()
+            frame_log.append((state["frames"], wall, len(fused.body_list)))
 
             if state["frames"] % 30 == 1:
                 print(f"[diag] fused frame {state['frames']}, "
@@ -245,6 +247,14 @@ def main():
             w.writerow(["frame_idx", "wall_clock", "body_id", "tracking_state",
                         "joint_idx", "joint_name", "x", "y", "z", "confidence"])
             w.writerows(rows)
+        # Per-frame heartbeat: EVERY grabbed frame (incl. zero-body frames), so the
+        # floor-coverage map knows where detection drops to zero.
+        frames_out = os.path.join(REPO, "results", "layouts",
+                                  f"zed_pred_{args.layout_id}_frames.csv")
+        with open(frames_out, "w", newline="") as f:
+            w = csv.writer(f)
+            w.writerow(["frame_idx", "wall_clock", "n_bodies"])
+            w.writerows(frame_log)
         meta = {
             "layout_id": args.layout_id,
             "mode": "fusion",

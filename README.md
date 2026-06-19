@@ -97,11 +97,12 @@ machine needs internet. To change the scene, re-save into `assets/test.usd` and 
   applies only to `simple_room`.
 - **Character** — `reference_scene` in the machine config + `character_prim` in
   experiment.yaml. Subject positions: `subject_positions` in experiment.yaml.
-- **Motion** — `config/experiment.yaml` `character_motion`: `inplace` (default; deterministic
-  baked in-place articulation) or `none` (static). Amplitudes/period in the `motion:` block;
-  the animation is authored in `isaac/character_motion.py` (a UsdSkel clip, same motion every
-  layout so placements compare fairly). `jitter_variance`/`id_drops` are live under motion,
-  NaN when `none`.
+- **Motion** — `config/experiment.yaml` `character_motion`: `walk` (default; deterministic
+  serpentine across the floor + walk-cycle), `inplace` (articulate at the center), or `none`
+  (static). Authored in `isaac/character_motion.py` (UsdSkel limb clip + a time-sampled root
+  translate; same motion every layout so placements compare fairly). Walk path + heatmap grid
+  in the `workspace`/`walk`/`grid_cell_m` config. `jitter_variance`/`id_drops` are live under
+  motion; `detection_coverage` (time-on-frame) varies under `walk` and feeds the ranking.
 - **Metrics** — compute in `analysis/metrics.py` `compute_metrics`, add the column to
   `RESULTS_COLUMNS`; joint pairing in `analysis/joint_map.py`. Run the tests after.
 - **Sweep** — grid in `experiment.yaml`; search logic in `sweep.py` (`layouts()` + gates).
@@ -178,6 +179,29 @@ Dropped from scoring (no signal in this sweep, report-only): `detection_coverage
 
 Tune anything in the `ranking:` block — no code change. Current full-sweep finding: accuracy
 is driven by **camera height/tilt** (lower is better), not radius.
+
+## Floor coverage / blind-spot maps
+
+With `character_motion: walk`, the human walks a deterministic serpentine across the
+`workspace` box, so `detection_coverage` (frames tracked / grabbed = "time on frame") varies
+by floor position. `analysis/floor_coverage.py` turns one layout's walk into a per-cell map of
+**where the placement keeps vs loses the skeleton** (and how accurate it is where tracked).
+
+```bash
+python3 analysis/floor_coverage.py --layout-id cal_h1.5_r2.5_az90    # ASCII + CSV + PNG
+```
+
+How it works: per frame we know the GT **pelvis (x,y)** (`gt_logger`) and whether ZED detected
+a body (`zed_pred_<id>_frames.csv`, the per-frame heartbeat `zed_fusion` writes — it records
+*every* grabbed frame incl. zero-body ones, which the main CSV omits). Binning by pelvis cell
+gives, per cell: `detection_rate` and `mean aligned MPJPE`. Output (in `reports/`, gitignored):
+- `floor_<id>.csv` — per-cell `detection_rate` + `mpjpe_mean_mm`,
+- `floor_<id>.png` — two heatmaps (detection rate; mean MPJPE) with cameras + aim overlaid,
+- an ASCII map to stdout (`#`≥0.9 tracked, digit = rate×10, `X` = lost, `.` = unvisited).
+
+Workflow: walk-run the candidate layouts → `rank.py` (now includes the time metric) → take the
+top 10 → `floor_coverage.py` per layout to see each winner's blind spots. Grid/box are set by
+`workspace.size_m` (default 5×5 m) and `grid_cell_m` (default 0.5 m).
 
 ## Notes
 

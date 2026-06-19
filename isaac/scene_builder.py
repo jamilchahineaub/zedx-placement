@@ -351,11 +351,13 @@ def build_scene(h, r, rel_az, subject_name, cfg, machine_cfg, cams="both"):
     # 5) Character.
     _load_character(stage, cfg, machine_cfg, subject_pos)
 
-    # 5b) In-place motion (deterministic baked UsdSkel animation), unless disabled.
+    # 5b) Motion: deterministic baked UsdSkel limb animation, plus a serpentine root
+    #     walk path (walk mode) so the GT skeleton moves across the floor.
     if cfg.get("character_motion", "inplace") != "none":
         skel_prim = _find_skeleton_prim(stage)
+        char_prim = stage.GetPrimAtPath("/World/biped_demo_meters")
         if skel_prim is not None:
-            character_motion.apply_inplace_animation(stage, skel_prim, cfg)
+            character_motion.apply_motion(stage, char_prim, skel_prim, cfg)
         else:
             print("scene_builder: no Skeleton found for motion; running static")
 

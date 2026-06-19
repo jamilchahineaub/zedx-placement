@@ -50,8 +50,10 @@ def _quatf(gf, quatd):
                     gf.Vec3f(float(im[0]), float(im[1]), float(im[2])))
 
 
-def apply_inplace_animation(stage, skel_prim, cfg):
-    """Author + bind a deterministic in-place animation to `skel_prim`.
+def apply_inplace_animation(stage, skel_prim, cfg, cover_s=None):
+    """Author + bind a deterministic limb (walk-cycle / in-place) animation to
+    `skel_prim` — joint ROTATIONS only; root translation (for walk) is handled
+    separately by apply_walk_path on the character prim.
 
     Returns the animation prim path (str) on success, or None if it was skipped.
     Sets the stage's TimeCodesPerSecond and start/end timecodes so the existing
@@ -62,7 +64,8 @@ def apply_inplace_animation(stage, skel_prim, cfg):
     mcfg = (cfg.get("motion") or {})
     period_s = float(mcfg.get("period_s", 4.0))
     fps = float(mcfg.get("fps", 30))
-    cover_s = float(mcfg.get("cover_s", 60.0))   # author this many seconds (no loop dependency)
+    if cover_s is None:
+        cover_s = float(mcfg.get("cover_s", 60.0))   # author this many seconds
     amps = {"arm_deg": float(mcfg.get("arm_deg", 35.0)),
             "torso_deg": float(mcfg.get("torso_deg", 20.0)),
             "leg_deg": float(mcfg.get("leg_deg", 12.0))}
@@ -135,3 +138,89 @@ def apply_inplace_animation(stage, skel_prim, cfg):
           f"{[a[0].split('/')[-1] for a in animated]} "
           f"period={period_s}s fps={fps:g} cover={cover_s:g}s -> {anim_path}")
     return anim_path
+
+
+# ---------------------------------------------------------------------------
+# Walk path (deterministic serpentine root translation across the floor)
+# ---------------------------------------------------------------------------
+
+def serpentine_polyline(cfg):
+    """Waypoints [(x,y), ...] of a boustrophedon sweep inside the workspace box.
+    Pure function (no pxr) so it's unit-testable."""
+    ws = (cfg.get("workspace") or {})
+    cx, cy = (list(ws.get("center", [0.0, 0.0])) + [0.0, 0.0])[:2]
+    W, H = (list(ws.get("size_m", [5.0, 5.0])) + [5.0, 5.0])[:2]
+    wk = (cfg.get("walk") or {})
+    m = float(wk.get("margin_m", 0.4))
+    rows = max(2, int(wk.get("serpentine_rows", 6)))
+    x0, x1 = cx - W / 2 + m, cx + W / 2 - m
+    y0, y1 = cy - H / 2 + m, cy + H / 2 - m
+    pts = []
+    for i in range(rows):
+        y = y0 + (y1 - y0) * (i / (rows - 1))
+        pts += [(x0, y), (x1, y)] if i % 2 == 0 else [(x1, y), (x0, y)]
+    return pts
+
+
+def polyline_pos(pts, s):
+    """Point at arc length s along the polyline, looping (s mod total). Pure."""
+    segs, total = [], 0.0
+    for a, b in zip(pts, pts[1:]):
+        L = math.hypot(b[0] - a[0], b[1] - a[1])
+        segs.append((a, b, L, total))
+        total += L
+    if total <= 1e-9:
+        return pts[0]
+    s = s % total
+    for a, b, L, acc in segs:
+        if s <= acc + L:
+            t = (s - acc) / L if L > 0 else 0.0
+            return (a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t)
+    return pts[-1]
+
+
+def apply_walk_path(stage, character_prim, cfg, cover_s=None):
+    """Time-sample the CHARACTER PRIM translate along the serpentine so gt_logger's
+    XformCache(timecode) logs the moving root. Walks on the floor (z = current z)."""
+    from pxr import Usd, UsdGeom, Gf
+
+    mcfg = (cfg.get("motion") or {})
+    wk = (cfg.get("walk") or {})
+    fps = float(mcfg.get("fps", 30))
+    if cover_s is None:
+        cover_s = float(wk.get("cover_s", 90.0))
+    speed = float(wk.get("speed_m_s", 0.8))
+    pts = serpentine_polyline(cfg)
+
+    xform = UsdGeom.Xformable(character_prim)
+    # Pure time samples (no static default) — clear any static translate authored by
+    # _load_character so we don't mix a default with the time samples.
+    xform.ClearXformOpOrder()
+    op = xform.AddTranslateOp()
+    op.GetAttr().Clear()
+    n_total = int(round(cover_s * fps))
+    for f in range(n_total + 1):
+        x, y = polyline_pos(pts, speed * (f / fps))
+        op.Set(Gf.Vec3d(float(x), float(y), 0.0), Usd.TimeCode(f))
+
+    stage.SetTimeCodesPerSecond(fps)
+    stage.SetStartTimeCode(0)
+    stage.SetEndTimeCode(n_total)
+    print(f"character_motion: walk serpentine {len(pts)} waypoints, speed {speed} m/s, "
+          f"cover {cover_s:g}s ({n_total} samples)")
+    return n_total
+
+
+def apply_motion(stage, character_prim, skel_prim, cfg):
+    """Dispatch by cfg['character_motion']: 'walk' = limb walk-cycle + serpentine
+    root translation; 'inplace' = limbs only; 'none' = static. Returns the mode."""
+    mode = cfg.get("character_motion", "inplace")
+    if mode == "none":
+        return "none"
+    # Unified cover so limbs and the walk path span the same timeline.
+    cover_s = (float((cfg.get("walk") or {}).get("cover_s", 90.0)) if mode == "walk"
+               else float((cfg.get("motion") or {}).get("cover_s", 60.0)))
+    apply_inplace_animation(stage, skel_prim, cfg, cover_s=cover_s)
+    if mode == "walk":
+        apply_walk_path(stage, character_prim, cfg, cover_s=cover_s)
+    return mode

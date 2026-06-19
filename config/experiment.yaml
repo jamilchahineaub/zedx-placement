@@ -44,17 +44,31 @@ occluders:
   table:  true    # 1 x 2 x 0.8 m box at (1.2, 0, 0.4)
   pillar: true    # 0.4 m dia, 2 m tall cylinder at (-1.2, 1.0, 1.0)
 
-# Character motion: "inplace" (deterministic baked in-place articulation) | "none" (static).
-# In-place = turn/weight-shift + arm/leg articulation at the subject point; the SAME motion
-# runs every layout so placements are compared fairly. Drives the existing UsdSkel skeleton
-# (NOT a physics articulation); captured per-frame by gt_logger; activates jitter/id_drops.
-character_motion:   inplace
+# Character motion: "walk" | "inplace" | "none".
+#   walk    = deterministic serpentine across the workspace box (root translates) + walk-cycle
+#             limb motion. Makes detection_coverage vary by floor position -> floor-coverage maps.
+#   inplace = turn/weight-shift + arm/leg articulation at the subject point (no translation).
+#   none    = static.
+# The SAME motion runs every layout so placements are compared fairly. Drives the existing
+# UsdSkel skeleton (NOT a physics articulation); captured per-frame by gt_logger.
+character_motion:   walk
 motion:
-  period_s:      4.0    # one full animation cycle (loops over the capture window)
+  period_s:      4.0    # limb walk-cycle period (s)
   fps:           30     # animation timecodes per second (stage TimeCodesPerSecond)
-  arm_deg:       35.0   # shoulder/elbow raise-lower amplitude
-  torso_deg:     20.0   # spine/neck yaw (turn-in-place) amplitude
-  leg_deg:       12.0   # thigh/knee weight-shift amplitude
+  arm_deg:       35.0   # shoulder/elbow swing amplitude
+  torso_deg:     20.0   # spine/neck yaw amplitude
+  leg_deg:       12.0   # thigh/knee swing amplitude
+
+# Walk path + floor-coverage grid (used by character_motion walk mode and floor_coverage.py).
+workspace:
+  center:   [0.0, 0.0]   # box centre on the floor (m), world X,Y
+  size_m:   [5.0, 5.0]   # box extent (m): the human walks within, the heatmap spans this
+grid_cell_m: 0.5         # floor-coverage cell size (5x5 box / 0.5 = 10x10 cells)
+walk:
+  speed_m_s:        0.8  # walking speed along the serpentine path
+  serpentine_rows:  6    # number of lengthwise passes across the box (more = finer y-coverage)
+  margin_m:         0.4  # keep the path this far inside the box edges
+  cover_s:          90.0 # author the path over this many seconds (>= capture window)
 
 # Path to the biped character source scene comes from machine.<name>.yaml
 # (reference_scene). character_prim is the prim referenced from it.
@@ -125,11 +139,12 @@ ranking:
       weight: 0.20
       metrics:
         mpjpe_mm: {w: 1.0, norm: absolute_band}
-    stability:            # temporal tracking reliability
+    stability:            # time-on-frame coverage + temporal tracking reliability
       weight: 0.30
       metrics:
-        id_drops:        {w: 0.5, norm: rank}
-        jitter_variance: {w: 0.5, norm: rank}
+        detection_coverage: {w: 0.50, norm: asis}   # time-on-frame (frames tracked / grabbed); live under walk
+        id_drops:           {w: 0.25, norm: rank}
+        jitter_variance:    {w: 0.25, norm: rank}
 
   # Axis-weight presets [pose_fidelity, absolute_placement, stability] for sensitivity.
   presets:
