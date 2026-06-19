@@ -236,6 +236,9 @@ def apply_walk_path(stage, character_prim, skel_prim, cfg, cover_s=None):
         cover_s = float(wk.get("cover_s", 90.0))
     speed = float(wk.get("speed_m_s", 0.8))
     pts = serpentine_polyline(cfg)
+    # Round-trip (there-and-back) so looping returns to the start smoothly instead of
+    # teleporting from the top of the box back to the bottom. Covers the box twice/cycle.
+    pts = pts + pts[-2::-1]
 
     # Measure BEFORE clearing the static translate (root still at its rest position).
     offx, offy = _root_to_pelvis_offset(stage, character_prim, skel_prim)
