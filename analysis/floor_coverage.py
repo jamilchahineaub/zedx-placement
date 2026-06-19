@@ -302,6 +302,15 @@ def main():
           f"grid={g['nx']}x{g['ny']}@{g['cell']}m  frames_in_box={tot_n}  "
           f"overall_coverage={overall:.3f}"
           + ("" if info["heartbeat"] else "  [WARN no heartbeat -> detection map empty]"))
+    # CAPTURED region (cells the ZED actually recorded) vs the walked bbox printed above.
+    # If CAPTURED is much smaller than walked, the ZED capture window was too short (in
+    # sim-time) to see a full walk -> increase --capture-duration or speed up the walk.
+    cov_cells = [(ix, iy) for (ix, iy), d in cells.items() if d["n"] > 0]
+    if cov_cells:
+        cxs = [g["x0"] + (ix + 0.5) * g["cell"] for ix, iy in cov_cells]
+        cys = [g["y0"] + (iy + 0.5) * g["cell"] for ix, iy in cov_cells]
+        print(f"floor_coverage: CAPTURED region x[{min(cxs):.2f},{max(cxs):.2f}] "
+              f"y[{min(cys):.2f},{max(cys):.2f}] ({len(cov_cells)} cells)")
     print(ascii_map(cells, g))
 
     csv_out = os.path.join(args.out, f"floor_{args.layout_id}.csv")

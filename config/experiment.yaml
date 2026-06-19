@@ -65,7 +65,8 @@ workspace:
   size_m:   [5.0, 5.0]   # box extent (m): the human walks within, the heatmap spans this
 grid_cell_m: 0.5         # floor-coverage cell size (5x5 box / 0.5 = 10x10 cells)
 walk:
-  speed_m_s:        0.8  # walking speed along the serpentine path
+  speed_m_s:        1.5  # walking speed along the serpentine (faster = full box covered in
+                         # less SIM time, so a fixed ZED capture window sees a whole sweep)
   serpentine_rows:  6    # number of lengthwise passes across the box (more = finer y-coverage)
   margin_m:         0.4  # keep the path this far inside the box edges
   cover_s:          90.0 # author the path over this many seconds (>= capture window)
