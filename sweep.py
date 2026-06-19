@@ -18,6 +18,7 @@ import argparse
 import itertools
 import os
 import sys
+import time
 import traceback
 
 import yaml
@@ -76,16 +77,25 @@ def main():
             continue
 
         # Full evaluation: Isaac episode + ZED capture + metrics (~4-6 min).
-        print(f"sweep: evaluating {layout_id} ...", flush=True)
-        try:
-            row = camera_rig.evaluate_layout(
-                h, r, az, subject, cfg, machine=args.machine,
-                layout_id=layout_id, subject_pos_name=args.subject_name,
-                episode_duration=args.episode_duration,
-                capture_duration=args.capture_duration, mode=args.mode)
-        except Exception as e:
-            print(f"RUN_FAILED {layout_id}: {e}")
-            traceback.print_exc()
+        # Retry once: a transient ZED stream-startup race (one camera not yet
+        # publishing when the receiver opens) drops ~1/4 of layouts otherwise.
+        row = None
+        for attempt in (1, 2):
+            print(f"sweep: evaluating {layout_id} (attempt {attempt}/2) ...", flush=True)
+            try:
+                row = camera_rig.evaluate_layout(
+                    h, r, az, subject, cfg, machine=args.machine,
+                    layout_id=layout_id, subject_pos_name=args.subject_name,
+                    episode_duration=args.episode_duration,
+                    capture_duration=args.capture_duration, mode=args.mode)
+                break
+            except Exception as e:
+                print(f"RUN_FAILED {layout_id} (attempt {attempt}/2): {e}")
+                traceback.print_exc()
+                if attempt < 2:
+                    time.sleep(10)   # let Isaac/ZED fully exit + ports free before retry
+        if row is None:
+            print(f"RUN_DROPPED {layout_id}: failed after 2 attempts", flush=True)
             continue
 
         metrics_mod.append_results_row(RESULTS_CSV, row)
