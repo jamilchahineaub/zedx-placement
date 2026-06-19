@@ -71,6 +71,14 @@ walk:
   margin_m:         0.4  # keep the path this far inside the box edges
   cover_s:          90.0 # author the path over this many seconds (>= capture window)
 
+# Per-frame metric timing. frame_offset_s shifts ZED frames before matching to GT frames,
+# cancelling the render->detection pipeline latency under motion (measured via a frame-offset
+# sweep: abs MPJPE bottomed at ~-0.42s on this 4090/warehouse setup). Aligned MPJPE is robust
+# to this; it mainly cleans up absolute MPJPE + the spatial binning of the floor map.
+# Re-measure if hardware / scene / walk-speed changes.
+metrics:
+  frame_offset_s: -0.42
+
 # Path to the biped character source scene comes from machine.<name>.yaml
 # (reference_scene). character_prim is the prim referenced from it.
 character_prim: /World/biped_demo_meters

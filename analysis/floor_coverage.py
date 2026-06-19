@@ -95,10 +95,11 @@ def _nearest_xy(pelvis, walls, w):
     return (pelvis[k][1], pelvis[k][2])
 
 
-def compute_floor_coverage(layout_id, cfg, results_dir, conf_min=20.0):
+def compute_floor_coverage(layout_id, cfg, results_dir, conf_min=20.0, offset_s=0.0):
     """Returns (cells, grid, info). cells[(ix,iy)] = {n, det, mpjpe:[...]}.
     n = frames the person was in this cell; det = frames with a body; mpjpe = aligned
-    per-frame errors (mm) when tracked."""
+    per-frame errors (mm) when tracked. offset_s shifts ZED frame wall_clocks before
+    matching to GT (cancels render->detection latency so binning lands on the right cell)."""
     gt = os.path.join(results_dir, f"ground_truth_{layout_id}.csv")
     pred = os.path.join(results_dir, f"zed_pred_{layout_id}.csv")
     hb = os.path.join(results_dir, f"zed_pred_{layout_id}_frames.csv")
@@ -117,7 +118,7 @@ def compute_floor_coverage(layout_id, cfg, results_dir, conf_min=20.0):
     # 1) Detection map from the per-frame heartbeat (covers ALL frames incl. lost ones).
     if os.path.exists(hb):
         for w, nb in load_heartbeat(hb):
-            pos = _nearest_xy(pelvis, walls, w)
+            pos = _nearest_xy(pelvis, walls, w + offset_s)
             if pos is None:
                 continue
             c = cell_of(pos[0], pos[1], g)
@@ -131,7 +132,7 @@ def compute_floor_coverage(layout_id, cfg, results_dir, conf_min=20.0):
     # 2) Accuracy map from per-frame aligned MPJPE, binned by pelvis position.
     gtf = metrics.load_gt_per_frame(gt, joint_filter=set(joint_map.isaac_names()))
     pf = metrics.load_pred_per_frame(pred, conf_min=conf_min)
-    pairs = metrics.associate_frames(gtf, pf)
+    pairs = metrics.associate_frames(gtf, pf, offset_s=offset_s)
     tf = metrics.fused_to_isaac
     for gfr, pfr in pairs:
         b = metrics._primary_body(pfr)
@@ -146,7 +147,7 @@ def compute_floor_coverage(layout_id, cfg, results_dir, conf_min=20.0):
         off = [sum(v[k] for v in e) / n for k in range(3)]
         aln = 1000.0 * sum(math.sqrt(sum((v[k] - off[k]) ** 2 for k in range(3)))
                            for v in e) / n
-        pos = _nearest_xy(pelvis, walls, pfr["wall"])
+        pos = _nearest_xy(pelvis, walls, pfr["wall"] + offset_s)
         if pos is None:
             continue
         c = cell_of(pos[0], pos[1], g)
@@ -264,6 +265,9 @@ def main():
     ap.add_argument("--auto-frame", action="store_true",
                     help="frame the grid on the actual pelvis trajectory bbox (+margin) "
                          "instead of the config workspace box")
+    ap.add_argument("--frame-offset", type=float, default=None,
+                    help="seconds to shift ZED frames before matching GT (latency); "
+                         "default = config metrics.frame_offset_s")
     args = ap.parse_args()
 
     cfg = yaml.safe_load(open(args.config))
@@ -293,7 +297,12 @@ def main():
             print(f"floor_coverage: auto-framed grid to pelvis bbox "
                   f"center={cfg['workspace']['center']} size={cfg['workspace']['size_m']}")
 
-    cells, g, info = compute_floor_coverage(args.layout_id, cfg, args.results_dir, args.conf)
+    offset_s = (args.frame_offset if args.frame_offset is not None
+                else float((cfg.get("metrics") or {}).get("frame_offset_s", 0.0)))
+    if offset_s:
+        print(f"floor_coverage: applying frame_offset_s={offset_s:+.2f}s (latency correction)")
+    cells, g, info = compute_floor_coverage(args.layout_id, cfg, args.results_dir,
+                                            args.conf, offset_s=offset_s)
     tot_n = sum(d["n"] for d in cells.values())
     tot_det = sum(d["det"] for d in cells.values())
     overall = (tot_det / tot_n) if tot_n else NAN
