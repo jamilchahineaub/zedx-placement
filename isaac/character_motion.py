@@ -188,10 +188,13 @@ def _root_to_pelvis_offset(stage, character_prim, skel_prim):
     try:
         skel = UsdSkel.Skeleton(skel_prim)
         joints = [str(j).split("/")[-1] for j in (skel.GetJointsAttr().Get() or [])]
+        # Same pelvis match as gt_logger / floor_coverage (note: this rig's joint is
+        # "Hip", singular — earlier this was missed and a wrong joint got picked).
         pidx = next((i for i, n in enumerate(joints)
-                     if "pelvis" in n.lower() or n.lower() == "hips"), None)
+                     if "pelvis" in n.lower() or n.lower() in ("hips", "hip")), None)
         if pidx is None:
-            print("character_motion: no pelvis joint -> walk path NOT pelvis-centred")
+            print("character_motion: no pelvis/hip joint -> walk path NOT pelvis-centred "
+                  f"(leaves sample: {joints[:8]})")
             return 0.0, 0.0
         cache = UsdSkel.Cache()
         for prim in stage.Traverse():
@@ -205,7 +208,16 @@ def _root_to_pelvis_offset(stage, character_prim, skel_prim):
             return 0.0, 0.0
         pt = world[pidx].ExtractTranslation()
         rt = xfc.GetLocalToWorldTransform(character_prim).ExtractTranslation()
-        return float(pt[0] - rt[0]), float(pt[1] - rt[1])
+        offx, offy = float(pt[0] - rt[0]), float(pt[1] - rt[1])
+        # Safety: an implausible offset means we grabbed the wrong joint -> don't shift
+        # (driving the root directly is never worse than over-shifting it off the box).
+        if (offx * offx + offy * offy) ** 0.5 > 3.0:
+            print(f"character_motion: pelvis offset ({offx:.2f},{offy:.2f}) implausibly "
+                  f"large via joint '{joints[pidx]}' -> NOT centring (root drives directly)")
+            return 0.0, 0.0
+        print(f"character_motion: pelvis joint '{joints[pidx]}' offset "
+              f"({offx:.2f},{offy:.2f})")
+        return offx, offy
     except Exception as e:
         print(f"character_motion: pelvis-offset measurement failed ({e}); path not centred")
         return 0.0, 0.0

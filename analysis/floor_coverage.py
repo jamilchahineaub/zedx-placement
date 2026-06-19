@@ -272,6 +272,14 @@ def main():
         print(f"floor_coverage: no ground truth for {args.layout_id} ({gt})")
         return
 
+    # Always report where the pelvis actually walked (diagnoses off-center/clipped walks).
+    _pel, _pn = load_gt_pelvis_per_frame(gt)
+    if _pel:
+        _xs = [p[1] for p in _pel]
+        _ys = [p[2] for p in _pel]
+        print(f"floor_coverage: pelvis '{_pn}' walked x[{min(_xs):.2f},{max(_xs):.2f}] "
+              f"y[{min(_ys):.2f},{max(_ys):.2f}] over {len(_pel)} frames")
+
     if args.auto_frame:
         pel, _ = load_gt_pelvis_per_frame(gt)
         if pel:
