@@ -83,6 +83,11 @@ walk:
 # Re-measure if hardware / scene / walk-speed changes.
 metrics:
   frame_offset_s: -0.42
+  # floor_coverage tracked_rate: a detected body counts as the REAL person (not a ghost)
+  # when its centroid is within this many metres of the true pelvis. Raw detection_rate
+  # saturates at 1.0 (ghost bodies always present in a 2-cam box), so the floor map uses
+  # this ghost-aware rate instead. 0.30 m ~ half a body width.
+  tracked_radius_m: 0.30
 
 # Path to the biped character source scene comes from machine.<name>.yaml
 # (reference_scene). character_prim is the prim referenced from it.

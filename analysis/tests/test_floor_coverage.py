@@ -102,6 +102,55 @@ def test_coverage_lost_on_right(tmp_path):
     assert 0.0 < tot_det / tot_n < 1.0
 
 
+def _write_ghost(tmp_path, ghost_dx, lid="g"):
+    """Person stands at centre the whole time; the predicted body is shifted ghost_dx in x
+    (a ghost when ghost_dx is large). Always detected (n_bodies=1)."""
+    gt = tmp_path / f"ground_truth_{lid}.csv"
+    pred = tmp_path / f"zed_pred_{lid}.csv"
+    hb = tmp_path / f"zed_pred_{lid}_frames.csv"
+    with open(gt, "w", newline="") as f:
+        w = csv.writer(f); w.writerow(["sim_time", "wall_clock", "joint_name", "x", "y", "z"])
+        for i in range(N):
+            wall = W0 + i * DT
+            w.writerow([i * DT, wall, "Pelvis", 0.0, 0.0, 0.9])
+            w.writerow([i * DT, wall, NECK_I, 0.0, 0.0, 1.45])
+            w.writerow([i * DT, wall, RUA_I, 0.0, -0.2, 1.40])
+    with open(pred, "w", newline="") as f:
+        w = csv.writer(f)
+        w.writerow(["frame_idx", "wall_clock", "body_id", "tracking_state",
+                    "joint_idx", "joint_name", "x", "y", "z", "confidence"])
+        for i in range(N):
+            wall = W0 + i * DT
+            for j, (iname, p) in enumerate([(NECK_Z, (ghost_dx, 0.0, 1.45)),
+                                            (RUA_Z, (ghost_dx, -0.2, 1.40))]):
+                q = isaac_to_zed(p)
+                w.writerow([i + 1, wall, 1, "OBJECT_TRACKING_STATE.OK", j, iname,
+                            q[0], q[1], q[2], 95.0])
+    with open(hb, "w", newline="") as f:
+        w = csv.writer(f); w.writerow(["frame_idx", "wall_clock", "n_bodies"])
+        for i in range(N):
+            w.writerow([i + 1, W0 + i * DT, 1])
+    return lid
+
+
+def test_ghost_detected_but_not_tracked(tmp_path):
+    # Body always present but 0.6 m off the true pelvis -> detection 1.0, tracked 0.0.
+    lid = _write_ghost(tmp_path, 0.6, lid="ghost")
+    cells, g, _ = fc.compute_floor_coverage(lid, CFG, str(tmp_path), conf_min=20.0,
+                                            tracked_radius_m=0.30)
+    centre = cells[(2, 2)]
+    assert centre["det"] == centre["n"]                       # detection saturates
+    assert centre["acc"] > 0 and centre["trk"] == 0           # but never the real person
+    assert fc._det_rate(centre) == pytest.approx(1.0)
+    assert fc._tracked_rate(centre) == pytest.approx(0.0)
+
+    # Body within the radius -> counts as tracked.
+    lid2 = _write_ghost(tmp_path, 0.10, lid="near")
+    c2 = fc.compute_floor_coverage(lid2, CFG, str(tmp_path), conf_min=20.0,
+                                   tracked_radius_m=0.30)[0][(2, 2)]
+    assert fc._tracked_rate(c2) == pytest.approx(1.0)
+
+
 def test_outputs_smoke(tmp_path):
     lid = _write(tmp_path)
     cells, g, _ = fc.compute_floor_coverage(lid, CFG, str(tmp_path), conf_min=20.0)

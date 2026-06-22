@@ -95,11 +95,17 @@ def _nearest_xy(pelvis, walls, w):
     return (pelvis[k][1], pelvis[k][2])
 
 
-def compute_floor_coverage(layout_id, cfg, results_dir, conf_min=20.0, offset_s=0.0):
-    """Returns (cells, grid, info). cells[(ix,iy)] = {n, det, mpjpe:[...]}.
-    n = frames the person was in this cell; det = frames with a body; mpjpe = aligned
-    per-frame errors (mm) when tracked. offset_s shifts ZED frame wall_clocks before
-    matching to GT (cancels render->detection latency so binning lands on the right cell)."""
+def compute_floor_coverage(layout_id, cfg, results_dir, conf_min=20.0, offset_s=0.0,
+                           tracked_radius_m=0.30):
+    """Returns (cells, grid, info). cells[(ix,iy)] = {n, det, acc, trk, mpjpe:[...]}.
+    n   = frames the person was in this cell (from heartbeat);
+    det = frames with ANY body (>=1, ghosts included -> saturates at 1.0 in a 2-cam box);
+    acc = frames where ZED gave a body we could measure;
+    trk = of those, frames where the body's centroid sits within tracked_radius_m of the
+          true pelvis (i.e. the REAL person, not a ghost) -> tracked_rate = trk/acc;
+    mpjpe = aligned per-frame errors (mm) when tracked.
+    offset_s shifts ZED frame wall_clocks before matching to GT (cancels render->detection
+    latency so binning lands on the right cell)."""
     gt = os.path.join(results_dir, f"ground_truth_{layout_id}.csv")
     pred = os.path.join(results_dir, f"zed_pred_{layout_id}.csv")
     hb = os.path.join(results_dir, f"zed_pred_{layout_id}_frames.csv")
@@ -110,7 +116,7 @@ def compute_floor_coverage(layout_id, cfg, results_dir, conf_min=20.0, offset_s=
     cells = {}
 
     def cell(c):
-        return cells.setdefault(c, {"n": 0, "det": 0, "mpjpe": []})
+        return cells.setdefault(c, {"n": 0, "det": 0, "acc": 0, "trk": 0, "mpjpe": []})
 
     info = {"pelvis_joint": pelvis_name, "gt_frames": len(pelvis),
             "heartbeat": os.path.exists(hb), "outside_box": 0}
@@ -145,6 +151,7 @@ def compute_floor_coverage(layout_id, cfg, results_dir, conf_min=20.0, offset_s=
             continue
         n = len(e)
         off = [sum(v[k] for v in e) / n for k in range(3)]
+        off_m = math.sqrt(sum(o * o for o in off))   # centroid offset (m): real person vs ghost
         aln = 1000.0 * sum(math.sqrt(sum((v[k] - off[k]) ** 2 for k in range(3)))
                            for v in e) / n
         pos = _nearest_xy(pelvis, walls, pfr["wall"] + offset_s)
@@ -152,7 +159,10 @@ def compute_floor_coverage(layout_id, cfg, results_dir, conf_min=20.0, offset_s=
             continue
         c = cell_of(pos[0], pos[1], g)
         if c is not None:
-            cell(c)["mpjpe"].append(aln)
+            d = cell(c)
+            d["mpjpe"].append(aln)
+            d["acc"] += 1
+            d["trk"] += 1 if off_m <= tracked_radius_m else 0
     return cells, g, info
 
 
@@ -162,8 +172,15 @@ def _det_rate(d):
     return (d["det"] / d["n"]) if d["n"] else NAN
 
 
+def _tracked_rate(d):
+    """Fraction of frames the person was present where the detected body was actually them
+    (within tracked_radius_m) — so BOTH ghost frames and lost frames count as untracked."""
+    return min(1.0, d["trk"] / d["n"]) if d.get("n") else NAN
+
+
 def ascii_map(cells, g):
-    """# >=.9, digit = rate*10, X = <.2 lost, . = never visited. Top row = +y."""
+    """Tracked rate: # >=.9, digit = rate*10, X = <.2 (ghost/lost), . = never visited.
+    Top row = +y."""
     lines = []
     for iy in range(g["ny"] - 1, -1, -1):
         row = []
@@ -172,7 +189,7 @@ def ascii_map(cells, g):
             if not d or d["n"] == 0:
                 row.append(" .")
             else:
-                r = _det_rate(d)
+                r = _tracked_rate(d)
                 row.append(" #" if r >= 0.9 else (" X" if r < 0.2 else f" {int(r * 10)}"))
         lines.append("".join(row))
     return "\n".join(lines)
@@ -183,47 +200,52 @@ def write_cell_csv(cells, g, path):
     with open(path, "w", newline="") as f:
         w = csv.writer(f)
         w.writerow(["ix", "iy", "x_center", "y_center", "n_frames",
-                    "detection_rate", "mpjpe_mean_mm"])
+                    "detection_rate", "tracked_rate", "mpjpe_mean_mm"])
         for iy in range(g["ny"]):
             for ix in range(g["nx"]):
-                d = cells.get((ix, iy), {"n": 0, "det": 0, "mpjpe": []})
+                d = cells.get((ix, iy), {"n": 0, "det": 0, "acc": 0, "trk": 0, "mpjpe": []})
                 xc = g["x0"] + (ix + 0.5) * g["cell"]
                 yc = g["y0"] + (iy + 0.5) * g["cell"]
                 mp = (sum(d["mpjpe"]) / len(d["mpjpe"])) if d["mpjpe"] else NAN
+                tr = _tracked_rate(d)
                 w.writerow([ix, iy, f"{xc:.3f}", f"{yc:.3f}", d["n"],
                             f"{_det_rate(d):.4f}" if d["n"] else "nan",
+                            f"{tr:.4f}" if not math.isnan(tr) else "nan",
                             f"{mp:.2f}" if not math.isnan(mp) else "nan"])
 
 
-def save_png(cells, g, out_png, cams=None, layout_id="", overall=None, path=None):
-    """Three panels: occupancy (frames/cell), detection rate, mean MPJPE. The
-    actual GT walk trajectory (`path` = [(x,y),...]) is overlaid on the detection
-    panel so you can confirm the map matches where the person actually walked."""
+def save_png(cells, g, out_png, cams=None, layout_id="", overall=None, path=None,
+             tracked_radius_m=0.30):
+    """Three panels: occupancy (frames/cell), tracked rate, mean MPJPE. The middle
+    panel is the ghost-aware TRACKED rate (fraction of frames where the detected body is
+    the real person, within tracked_radius_m of the true pelvis) — not raw detection
+    rate, which saturates at 1.0 because ghost bodies are always present. The actual GT
+    walk trajectory (`path`) is overlaid so you can confirm the map matches the walk."""
     import numpy as np
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
     occ = np.full((g["ny"], g["nx"]), np.nan)
-    det = np.full((g["ny"], g["nx"]), np.nan)
+    trk = np.full((g["ny"], g["nx"]), np.nan)
     mp = np.full((g["ny"], g["nx"]), np.nan)
     for (ix, iy), d in cells.items():
         if d["n"]:
             occ[iy, ix] = d["n"]
-            det[iy, ix] = d["det"] / d["n"]
+            trk[iy, ix] = min(1.0, d["trk"] / d["n"])
         if d["mpjpe"]:
             mp[iy, ix] = sum(d["mpjpe"]) / len(d["mpjpe"])
     extent = [g["x0"], g["x0"] + g["nx"] * g["cell"],
               g["y0"], g["y0"] + g["ny"] * g["cell"]]
 
     fig, ax = plt.subplots(1, 3, figsize=(18, 5.5))
-    t = layout_id + (f"  (overall coverage {overall:.2f})" if overall is not None else "")
+    t = layout_id + (f"  (overall tracked {overall:.2f})" if overall is not None else "")
     im0 = ax[0].imshow(occ, origin="lower", extent=extent, cmap="viridis", aspect="equal")
     ax[0].set_title(f"occupancy (frames/cell) — {t}")
     fig.colorbar(im0, ax=ax[0], fraction=0.046)
-    im1 = ax[1].imshow(det, origin="lower", extent=extent, vmin=0, vmax=1,
+    im1 = ax[1].imshow(trk, origin="lower", extent=extent, vmin=0, vmax=1,
                        cmap="RdYlGn", aspect="equal")
-    ax[1].set_title("detection rate")
+    ax[1].set_title(f"tracked rate (body <{tracked_radius_m*100:.0f}cm of GT)")
     fig.colorbar(im1, ax=ax[1], fraction=0.046)
     im2 = ax[2].imshow(mp, origin="lower", extent=extent, cmap="RdYlGn_r", aspect="equal")
     ax[2].set_title("mean aligned MPJPE (mm)")
@@ -268,6 +290,10 @@ def main():
     ap.add_argument("--frame-offset", type=float, default=None,
                     help="seconds to shift ZED frames before matching GT (latency); "
                          "default = config metrics.frame_offset_s")
+    ap.add_argument("--tracked-radius", type=float, default=None,
+                    help="metres: a detected body counts as the real person (not a ghost) "
+                         "if its centroid is within this of the true pelvis; "
+                         "default = config metrics.tracked_radius_m or 0.30")
     args = ap.parse_args()
 
     cfg = yaml.safe_load(open(args.config))
@@ -301,15 +327,21 @@ def main():
                 else float((cfg.get("metrics") or {}).get("frame_offset_s", 0.0)))
     if offset_s:
         print(f"floor_coverage: applying frame_offset_s={offset_s:+.2f}s (latency correction)")
+    radius = (args.tracked_radius if args.tracked_radius is not None
+              else float((cfg.get("metrics") or {}).get("tracked_radius_m", 0.30)))
     cells, g, info = compute_floor_coverage(args.layout_id, cfg, args.results_dir,
-                                            args.conf, offset_s=offset_s)
+                                            args.conf, offset_s=offset_s,
+                                            tracked_radius_m=radius)
     tot_n = sum(d["n"] for d in cells.values())
     tot_det = sum(d["det"] for d in cells.values())
-    overall = (tot_det / tot_n) if tot_n else NAN
+    tot_acc = sum(d["acc"] for d in cells.values())
+    tot_trk = sum(d["trk"] for d in cells.values())
+    det_cov = (tot_det / tot_n) if tot_n else NAN
+    overall = (tot_trk / tot_n) if tot_n else NAN   # ghost+lost-aware tracked coverage
 
     print(f"floor_coverage: {args.layout_id}  pelvis={info['pelvis_joint']}  "
           f"grid={g['nx']}x{g['ny']}@{g['cell']}m  frames_in_box={tot_n}  "
-          f"overall_coverage={overall:.3f}"
+          f"detection={det_cov:.3f}  tracked(<{radius*100:.0f}cm)={overall:.3f}"
           + ("" if info["heartbeat"] else "  [WARN no heartbeat -> detection map empty]"))
     # CAPTURED region (cells the ZED actually recorded) vs the walked bbox printed above.
     # If CAPTURED is much smaller than walked, the ZED capture window was too short (in
@@ -338,7 +370,7 @@ def main():
         path = [(p[1], p[2]) for p in pelvis]
         png = os.path.join(args.out, f"floor_{args.layout_id}.png")
         save_png(cells, g, png, cams=cams, layout_id=args.layout_id,
-                 overall=overall, path=path)
+                 overall=overall, path=path, tracked_radius_m=radius)
         print(f"floor_coverage: wrote {png}")
 
 
