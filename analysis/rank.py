@@ -42,6 +42,9 @@ _MEAN_COLS = [
     "joint_visibility_either", "joint_visibility_both",
     "unique_contribution_cam_b", "jitter_variance", "id_drops",
     "convergence_angle_deg", "tilt_deg",
+    # 3-cam (overhead) geometry — NaN for 2-cam rows, carried so the ranking can surface them.
+    "convergence_ab_deg", "convergence_ac_deg", "convergence_bc_deg",
+    "joint_visibility_cam_c", "unique_contribution_cam_c",
 ]
 
 
@@ -449,12 +452,16 @@ def write_csv(path, ranked):
     # Include cam_c_h_m only if any ranked layout carries it (3-cam results).
     cam_c_cols = ["cam_c_h_m"] if any(
         r.get("cam_c_h_m") is not None and not _isnan(r.get("cam_c_h_m")) for r in ranked) else []
+    # Pairwise convergence angles only exist for 3-cam rows — surface them when present.
+    conv_pair_cols = ["convergence_ab_deg", "convergence_ac_deg", "convergence_bc_deg"] if any(
+        r.get("convergence_ab_deg") is not None and not _isnan(r.get("convergence_ab_deg"))
+        for r in ranked) else []
     cols = (["rank", "h_m", "r_m", "rel_az_deg"] + cam_c_cols
             + ["score", "valid", "flag_reason", "pareto"]
             + axis_cols
             + ["mpjpe_aligned_mm", "mpjpe_mm", "registration_offset_mm",
                "id_drops", "jitter_variance", "joint_visibility_both",
-               "convergence_angle_deg", "tilt_deg", "n_subjects"])
+               "convergence_angle_deg"] + conv_pair_cols + ["tilt_deg", "n_subjects"])
     with open(path, "w", newline="") as f:
         w = csv.writer(f)
         w.writerow(cols)
