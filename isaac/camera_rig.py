@@ -99,6 +99,25 @@ def convergence_angle(pos_a, pos_b, subject=(0.0, 0.0, 0.0)):
     return math.degrees(math.acos(dot))
 
 
+def overhead_position(overhead_h, center=(0.0, 0.0)):
+    """World position of the centered overhead (nadir) camera: workspace centre
+    (x,y) at the given height. Looks straight down at the aim point."""
+    return [center[0], center[1], float(overhead_h)]
+
+
+def pairwise_convergences(positions, subject=(0.0, 0.0, 0.0)):
+    """Pairwise convergence angles (deg) for a dict of {name: [x,y,z]} cameras.
+    Returns {(name_i, name_j): angle} for every unordered pair, where the angle
+    is convergence_angle(pos_i, pos_j, subject)."""
+    names = list(positions.keys())
+    out = {}
+    for i in range(len(names)):
+        for j in range(i + 1, len(names)):
+            ni, nj = names[i], names[j]
+            out[(ni, nj)] = convergence_angle(positions[ni], positions[nj], subject)
+    return out
+
+
 def is_valid_layout(h, r, cfg):
     """
     True if the downward tilt for this (h, r) is below cfg['max_tilt_deg'].
@@ -111,7 +130,7 @@ def is_valid_layout(h, r, cfg):
 def evaluate_layout(h, r, rel_az_deg, subject_pos, cfg,
                     machine="laptop", layout_id=None, subject_pos_name="center",
                     episode_duration=240.0, capture_duration=20.0,
-                    mode="fusion"):
+                    mode="fusion", overhead_h=None):
     """
     THE SWEEP BOUNDARY. sweep.py calls only this function.
 
@@ -151,19 +170,22 @@ def evaluate_layout(h, r, rel_az_deg, subject_pos, cfg,
     # Fusion config for this layout (needed by zed_fusion + documents poses).
     fusion_cfg_path = os.path.join(repo, "results", "layouts",
                                    f"fusion_config_{layout_id}.json")
-    subprocess.run(
-        [machine_cfg.get("zed_python", "python3"),
-         os.path.join(repo, "zed", "make_fusion_config.py"),
-         "--out", fusion_cfg_path, "--h", str(h), "--r", str(r),
-         "--rel-az", str(rel_az_deg),
-         "--subject", " ".join(str(v) for v in subject_pos)],
-        cwd=repo, check=True, capture_output=True, text=True)
+    mk_cmd = [machine_cfg.get("zed_python", "python3"),
+              os.path.join(repo, "zed", "make_fusion_config.py"),
+              "--out", fusion_cfg_path, "--h", str(h), "--r", str(r),
+              "--rel-az", str(rel_az_deg),
+              "--subject", " ".join(str(v) for v in subject_pos)]
+    if overhead_h is not None:
+        mk_cmd += ["--overhead-h", str(overhead_h)]
+    subprocess.run(mk_cmd, cwd=repo, check=True, capture_output=True, text=True)
 
     proc, log_path = run_pipeline.launch_isaac(
         h, r, rel_az_deg, subject_pos_name, layout_id, machine, machine_cfg,
-        episode_duration)
+        episode_duration, overhead_h=overhead_h)
     try:
         expected = {cfg["cam_a"]["port"], cfg["cam_b"]["port"]}
+        if overhead_h is not None:
+            expected.add(cfg["cam_c"]["port"])
         run_pipeline.wait_for_streaming(log_path, proc, expected)
 
         if mode == "fusion":
@@ -198,4 +220,4 @@ def evaluate_layout(h, r, rel_az_deg, subject_pos, cfg,
     return metrics_mod.compute_metrics(
         gt_csv, pred_csv, meta, h, r, rel_az_deg, cfg,
         subject_pos=tuple(subject_pos), mode=mode,
-        subject_pos_name=subject_pos_name)
+        subject_pos_name=subject_pos_name, overhead_h=overhead_h)

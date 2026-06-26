@@ -104,26 +104,34 @@ def _joint_convergence(cam_a, cam_b, joint):
 # Public API
 # ---------------------------------------------------------------------------
 
-def prescreen(cam_a_pos, cam_b_pos, joints, cfg, subject=(0.0, 0.0, 0.0)):
+def prescreen(cam_a_pos, cam_b_pos, joints, cfg, subject=(0.0, 0.0, 0.0),
+              cam_c_pos=None):
     """
-    Geometric VRST pre-screen of a two-camera layout.
+    Geometric VRST pre-screen of a two- (or three-) camera layout.
 
-    cam_a_pos, cam_b_pos : [x,y,z] world camera positions
+    cam_a_pos, cam_b_pos : [x,y,z] world camera positions (the ring cameras)
     joints               : list of [x,y,z] joint positions; if None, the canonical
                            standing skeleton at `subject` is used.
     cfg                  : experiment config dict (needs cfg['zed_x'],
                            cfg['triangulable_min_deg'], cfg['triangulable_max_deg'],
                            cfg['aim_height_m']).
     subject              : subject floor position (for the aim point + default skel).
+    cam_c_pos            : optional [x,y,z] of the centered overhead (nadir) camera.
+                           When None this behaves EXACTLY like the 2-camera prescreen
+                           (same keys/values); when set, the per-camera/per-pair stats
+                           generalize and extra cam-C keys are added.
 
-    Returns a dict:
+    Returns a dict (2-cam keys always present; cam-C keys only when cam_c_pos set):
       passed                            bool (joints_visible_both_triangulable >= 0.70)
-      convergence_angle_deg             whole-body convergence at the subject
-      joints_visible_cam_a              fraction in cam A FOV+range
-      joints_visible_cam_b              fraction in cam B FOV+range
-      joints_visible_either             fraction in A or B
-      joints_visible_both_triangulable  VRST fraction (in both + convergence in band)
+      convergence_angle_deg             mean of the present pairwise convergences
+      convergence_ab_deg                A-B convergence at the subject
+      convergence_ac_deg / _bc_deg      overhead pairs (only when cam_c_pos set)
+      joints_visible_cam_a/_b[/_c]      fraction in each camera's FOV+range
+      joints_visible_either             fraction visible to >= 1 camera
+      joints_visible_both_triangulable  fraction visible to >= 2 cams with a
+                                        triangulable pair (in [tri_min, tri_max])
       unique_contribution_cam_b         fraction B sees that A misses
+      unique_contribution_cam_c         fraction C sees that A and B both miss
     """
     cfg_zed = cfg["zed_x"]
     tri_min = cfg["triangulable_min_deg"]
@@ -136,39 +144,67 @@ def prescreen(cam_a_pos, cam_b_pos, joints, cfg, subject=(0.0, 0.0, 0.0)):
     aim_point = [subject[0], subject[1], subject[2] + aim_h]
     R_a = cr.rotation_matrix_from_look_at(cam_a_pos, aim_point)
     R_b = cr.rotation_matrix_from_look_at(cam_b_pos, aim_point)
+    has_c = cam_c_pos is not None
+    # The overhead camera aims straight down at the workspace centre, not at the
+    # (possibly off-centre) subject — match make_fusion_config's cam-C aim.
+    if has_c:
+        aim_c = [cam_c_pos[0], cam_c_pos[1], subject[2] + aim_h]
+        R_c = cr.rotation_matrix_from_look_at(cam_c_pos, aim_c)
 
     n = len(joints)
     if n == 0:
         raise ValueError("prescreen got an empty joint list")
 
-    vis_a = 0
-    vis_b = 0
+    vis_a = vis_b = vis_c = 0
     vis_either = 0
     both_tri = 0
     unique_b = 0
+    unique_c = 0
+
+    def _tri(p, q, j):
+        c = _joint_convergence(p, q, j)
+        return tri_min <= c <= tri_max
 
     for j in joints:
         in_a = _joint_in_view(cam_a_pos, R_a, j, cfg_zed)
         in_b = _joint_in_view(cam_b_pos, R_b, j, cfg_zed)
+        in_c = _joint_in_view(cam_c_pos, R_c, j, cfg_zed) if has_c else False
 
         vis_a += in_a
         vis_b += in_b
-        vis_either += (in_a or in_b)
+        vis_c += in_c
+        vis_either += (in_a or in_b or in_c)
         if in_b and not in_a:
             unique_b += 1
-        if in_a and in_b:
-            cang = _joint_convergence(cam_a_pos, cam_b_pos, j)
-            if tri_min <= cang <= tri_max:
-                both_tri += 1
+        if in_c and not in_a and not in_b:
+            unique_c += 1
+
+        # Triangulable if any pair of cameras that both see the joint has its
+        # convergence in the band. For 2 cams this is exactly the old A-B test.
+        if (in_a and in_b and _tri(cam_a_pos, cam_b_pos, j)) or \
+           (has_c and in_a and in_c and _tri(cam_a_pos, cam_c_pos, j)) or \
+           (has_c and in_b and in_c and _tri(cam_b_pos, cam_c_pos, j)):
+            both_tri += 1
 
     frac_both_tri = both_tri / n
 
-    return {
+    conv_ab = cr.convergence_angle(cam_a_pos, cam_b_pos, subject)
+    out = {
         "passed": frac_both_tri >= 0.70,
-        "convergence_angle_deg": cr.convergence_angle(cam_a_pos, cam_b_pos, subject),
+        "convergence_angle_deg": conv_ab,
+        "convergence_ab_deg": conv_ab,
         "joints_visible_cam_a": vis_a / n,
         "joints_visible_cam_b": vis_b / n,
         "joints_visible_either": vis_either / n,
         "joints_visible_both_triangulable": frac_both_tri,
         "unique_contribution_cam_b": unique_b / n,
     }
+    if has_c:
+        conv_ac = cr.convergence_angle(cam_a_pos, cam_c_pos, subject)
+        conv_bc = cr.convergence_angle(cam_b_pos, cam_c_pos, subject)
+        out["convergence_angle_deg"] = (conv_ab + conv_ac + conv_bc) / 3.0
+        out["convergence_ac_deg"] = conv_ac
+        out["convergence_bc_deg"] = conv_bc
+        out["joints_visible_cam_c"] = vis_c / n
+        out["unique_contribution_cam_c"] = unique_c / n
+    return out

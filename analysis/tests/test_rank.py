@@ -84,6 +84,42 @@ def test_load_and_aggregate(tmp_path):
     assert lays[0]["registration_offset_mm"] == pytest.approx(90)
 
 
+def test_overhead_height_splits_layout_groups():
+    # Same (h,r,az) ring layout but two different overhead heights must rank as
+    # two distinct 3-cam layouts (cam_c_h_m is part of the identity when present).
+    rows = [
+        {"h_m": 3.5, "r_m": 4.5, "rel_az_deg": 180, "subject_pos_name": "center",
+         "cam_c_h_m": 4.0, "mpjpe_mm": 80.0, "mpjpe_aligned_mm": 45.0,
+         "registration_offset_mm": 60.0, "detection_coverage": 1.0,
+         "jitter_variance": 1500.0, "id_drops": 0.0},
+        {"h_m": 3.5, "r_m": 4.5, "rel_az_deg": 180, "subject_pos_name": "center",
+         "cam_c_h_m": 6.0, "mpjpe_mm": 90.0, "mpjpe_aligned_mm": 55.0,
+         "registration_offset_mm": 70.0, "detection_coverage": 1.0,
+         "jitter_variance": 1600.0, "id_drops": 0.0},
+    ]
+    lays = rank.aggregate_by_layout(rows)
+    assert len(lays) == 2
+    heights = sorted(l["cam_c_h_m"] for l in lays)
+    assert heights == [4.0, 6.0]
+    # the label carries the overhead height
+    labels = [rank.layout_label(l) for l in lays]
+    assert any("oh4" in s for s in labels) and any("oh6" in s for s in labels)
+
+
+def test_no_cam_c_column_groups_as_before():
+    # 2-cam rows (no cam_c_h_m) must group exactly as before — one layout.
+    rows = [ROW_DICT(90), ROW_DICT(90)]
+    lays = rank.aggregate_by_layout(rows)
+    assert len(lays) == 1
+    assert "cam_c_h_m" not in lays[0]
+
+
+def ROW_DICT(az):
+    return {"h_m": 1.5, "r_m": 2.0, "rel_az_deg": az, "subject_pos_name": "center",
+            "mpjpe_mm": 100.0, "mpjpe_aligned_mm": 70.0, "registration_offset_mm": 80.0,
+            "detection_coverage": 1.0, "jitter_variance": 2000.0, "id_drops": 0.0}
+
+
 def test_aggregate_means_across_subjects():
     rows = [
         {"h_m": 1.5, "r_m": 2.0, "rel_az_deg": 90, "subject_pos_name": "center",

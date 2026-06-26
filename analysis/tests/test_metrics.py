@@ -149,6 +149,10 @@ def test_detection_coverage(tmp_path):
     assert m["detection_coverage"] == pytest.approx(15 / 20)
 
 
+_CAM_C_COLS = ["cam_c_h_m", "joint_visibility_cam_c", "unique_contribution_cam_c",
+               "convergence_ab_deg", "convergence_ac_deg", "convergence_bc_deg"]
+
+
 def test_all_results_columns_present(tmp_path):
     gt = tmp_path / "gt.csv"
     pred = tmp_path / "pred.csv"
@@ -156,10 +160,26 @@ def test_all_results_columns_present(tmp_path):
     write_pred(pred)
     m = metrics.compute_metrics(str(gt), str(pred), META, h=1.5, r=2.5,
                                 rel_az_deg=90, cfg=CFG, mode="fusion")
+    # 2-cam mode: every column EXCEPT the 3-cam-only (overhead) ones is present.
     for col in metrics.RESULTS_COLUMNS:
-        assert col in m, f"missing column {col}"
+        if col in _CAM_C_COLS:
+            assert col not in m, f"2-cam row should not carry {col}"
+        else:
+            assert col in m, f"missing column {col}"
     assert math.isnan(m["jitter_variance"])     # N/A on the static character
     assert math.isnan(m["id_drops"])
+
+
+def test_overhead_adds_cam_c_columns(tmp_path):
+    gt = tmp_path / "gt.csv"
+    pred = tmp_path / "pred.csv"
+    write_gt(gt)
+    write_pred(pred)
+    m = metrics.compute_metrics(str(gt), str(pred), META, h=1.5, r=2.5,
+                                rel_az_deg=90, cfg=CFG, mode="fusion", overhead_h=4.5)
+    for col in metrics.RESULTS_COLUMNS:
+        assert col in m, f"missing column {col}"     # 3-cam row carries them all
+    assert m["cam_c_h_m"] == 4.5
 
 
 def test_append_results_row(tmp_path):

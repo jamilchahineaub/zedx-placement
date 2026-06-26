@@ -114,7 +114,7 @@ def open_camera_from_stream(port, retries=3, retry_sleep=2.0, verbose=False,
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--port", type=int, default=30000, help="Isaac stream port (30000/30002)")
+    ap.add_argument("--port", type=int, default=31000, help="Isaac stream port (31000/31002/31004)")
     ap.add_argument("--layout-id", required=True, help="id for the output filename")
     ap.add_argument("--duration", type=float, default=30.0, help="max seconds to capture")
     ap.add_argument("--model", choices=sorted(_MODELS), default="accurate",

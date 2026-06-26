@@ -75,3 +75,46 @@ def test_camera_aims_down_by_true_tilt():
     fwd = [-R[0][2], -R[1][2], -R[2][2]]
     tilt_meas = math.degrees(math.atan2(-fwd[2], math.hypot(fwd[0], fwd[1])))
     assert abs(tilt_meas - mfc.compute_tilt_deg(h, r, 1.0)) < 1e-6   # true tilt, not 2x
+
+
+# --------------------------------------------------------------------------- 3rd (overhead) camera
+
+def _det3(M):
+    return (M[0][0] * (M[1][1] * M[2][2] - M[1][2] * M[2][1])
+            - M[0][1] * (M[1][0] * M[2][2] - M[1][2] * M[2][0])
+            + M[0][2] * (M[1][0] * M[2][1] - M[1][1] * M[2][0]))
+
+
+def test_nadir_pose_is_valid_and_points_straight_down():
+    # Centered overhead camera at 4.5 m, aiming straight down at 1 m.
+    pos_c = [0.0, 0.0, 4.5]
+    R = mfc.proper_rotation_world_from_cam(pos_c, [0.0, 0.0, 1.0])
+    assert abs(_det3(R) - 1.0) < 1e-9                  # proper rotation
+    # columns orthonormal
+    for j in range(3):
+        col = [R[0][j], R[1][j], R[2][j]]
+        assert abs(math.sqrt(sum(c * c for c in col)) - 1.0) < 1e-9
+    fwd = [-R[0][2], -R[1][2], -R[2][2]]
+    assert fwd == [0.0, 0.0, -1.0]                     # looks straight down
+
+
+def test_generate_overhead_adds_1003(tmp_path):
+    out = tmp_path / "f3.json"
+    info = mfc.generate(TEMPLATE, str(out), 1.5, 2.5, 90.0,
+                        subject_pos=(0, 0, 0), aim_height_m=1.0, cam_a_az=0,
+                        overhead_h=4.5, overhead_center=(0.0, 0.0))
+    cfg = json.load(open(out))
+    assert set(cfg.keys()) == {"1001", "1002", "1003"}
+    assert info["pos_c"] == [0.0, 0.0, 4.5]
+    # the 1003 pose must match the converted nadir pose
+    R_c = mfc.proper_rotation_world_from_cam([0.0, 0.0, 4.5], [0.0, 0.0, 1.0])
+    zp, zR = mfc.convert_isaac_to_zed_pose([0.0, 0.0, 4.5], R_c)
+    assert cfg["1003"]["FusionConfiguration"]["pose"] == mfc.make_pose_string(zp, zR)
+
+
+def test_generate_without_overhead_has_no_1003(tmp_path):
+    out = tmp_path / "f2.json"
+    mfc.generate(TEMPLATE, str(out), 1.5, 2.5, 90.0,
+                 subject_pos=(0, 0, 0), aim_height_m=1.0, cam_a_az=0)
+    cfg = json.load(open(out))
+    assert set(cfg.keys()) == {"1001", "1002"}          # 2-cam output unchanged

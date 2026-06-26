@@ -193,14 +193,19 @@ def camera_position(azimuth_deg, radius, height, subject=(0.0, 0.0, 0.0)):
 
 def generate(template_path, out_path, h, r, rel_az_deg,
              subject_pos=(0.0, 0.0, 0.0), aim_height_m=1.0,
-             cam_a_az=0):
+             cam_a_az=0, overhead_h=None, overhead_center=(0.0, 0.0)):
     """
-    h           : height of both cameras in metres
-    r           : radius of both cameras from subject in metres
-    rel_az_deg  : azimuth of cam B relative to cam A in degrees
-    subject_pos : where the subject stands
-    aim_height_m: cameras aim at this height above subject floor pos
-    cam_a_az    : azimuth of cam A in degrees (default 0)
+    h             : height of both ring cameras in metres
+    r             : radius of both ring cameras from subject in metres
+    rel_az_deg    : azimuth of cam B relative to cam A in degrees
+    subject_pos   : where the subject stands
+    aim_height_m  : cameras aim at this height above subject floor pos
+    cam_a_az      : azimuth of cam A in degrees (default 0)
+    overhead_h    : if not None, also write cam C (serial 1003) as a centered
+                    nadir camera at `overhead_center` at this height, looking
+                    straight down at aim_height_m. If None, the 1003 entry is
+                    removed so the output is a normal 2-camera config.
+    overhead_center: (x, y) of the overhead camera (workspace centre).
     """
     with open(template_path) as f:
         cfg = json.load(f)
@@ -224,13 +229,26 @@ def generate(template_path, out_path, h, r, rel_az_deg,
     zpos_b, zR_b = convert_isaac_to_zed_pose(pos_b, R_b)
     cfg["1002"]["FusionConfiguration"]["pose"] = make_pose_string(zpos_b, zR_b)
 
+    # Camera C — centered overhead (nadir). Optional. Aims straight down at the
+    # workspace centre at aim height; the look-at fallback (up=+Y) handles the
+    # vertical forward vector. Removed entirely for plain 2-cam configs.
+    pos_c = None
+    if overhead_h is not None:
+        pos_c = [overhead_center[0], overhead_center[1], float(overhead_h)]
+        aim_c = [overhead_center[0], overhead_center[1], subject_pos[2] + aim_height_m]
+        R_c = proper_rotation_world_from_cam(pos_c, aim_c)
+        zpos_c, zR_c = convert_isaac_to_zed_pose(pos_c, R_c)
+        cfg["1003"]["FusionConfiguration"]["pose"] = make_pose_string(zpos_c, zR_c)
+    else:
+        cfg.pop("1003", None)
+
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
     with open(out_path, "w") as f:
         json.dump(cfg, f, indent=4)
 
     tilt = compute_tilt_deg(h, r, aim_height_m)
     return {
-        "pos_a": pos_a, "pos_b": pos_b,
+        "pos_a": pos_a, "pos_b": pos_b, "pos_c": pos_c,
         "tilt_deg": round(tilt, 1),
         "convergence_approx_deg": round(rel_az_deg, 1),
     }
@@ -240,6 +258,8 @@ def print_layout(info, h, r, rel_az):
     print(f"\nLayout: h={h}m  r={r}m  rel_az={rel_az}°")
     print(f"  Cam A position : [{info['pos_a'][0]:.3f}, {info['pos_a'][1]:.3f}, {info['pos_a'][2]:.3f}]")
     print(f"  Cam B position : [{info['pos_b'][0]:.3f}, {info['pos_b'][1]:.3f}, {info['pos_b'][2]:.3f}]")
+    if info.get("pos_c") is not None:
+        print(f"  Cam C position : [{info['pos_c'][0]:.3f}, {info['pos_c'][1]:.3f}, {info['pos_c'][2]:.3f}]  (overhead/nadir)")
     print(f"  Downward tilt  : {info['tilt_deg']}°")
     print(f"  Rel azimuth    : {info['convergence_approx_deg']}°")
 
@@ -252,6 +272,9 @@ if __name__ == "__main__":
     parser.add_argument("--r",          type=float, required=True, help="radius in metres")
     parser.add_argument("--rel-az",     type=float, required=True, help="relative azimuth of cam B in degrees")
     parser.add_argument("--subject",    default="0.0 0.0 0.0")
+    parser.add_argument("--overhead-h", type=float, default=None,
+                        help="if set, also write cam C (serial 1003) as a centered "
+                             "nadir camera at this height over the workspace centre")
     parser.add_argument("--experiment", default="config/experiment.yaml")
     args = parser.parse_args()
 
@@ -259,6 +282,7 @@ if __name__ == "__main__":
     aim_h   = cfg.get("aim_height_m", 1.0)
     max_t   = cfg.get("max_tilt_deg", 40.0)
     cam_a_az= cfg["cam_a"]["azimuth_deg"]
+    center  = (cfg.get("workspace", {}).get("center", [0.0, 0.0]))
     S       = [float(v) for v in args.subject.split()]
 
     tilt = compute_tilt_deg(args.h, args.r, aim_h)
@@ -275,6 +299,8 @@ if __name__ == "__main__":
         subject_pos   = S,
         aim_height_m  = aim_h,
         cam_a_az      = cam_a_az,
+        overhead_h    = args.overhead_h,
+        overhead_center = (float(center[0]), float(center[1])),
     )
 
     print_layout(info, args.h, args.r, args.rel_az)

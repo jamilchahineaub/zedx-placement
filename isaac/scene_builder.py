@@ -292,19 +292,24 @@ def _find_skeleton_prim(stage):
 # Public entry point
 # ---------------------------------------------------------------------------
 
-def build_scene(h, r, rel_az, subject_name, cfg, machine_cfg, cams="both"):
+def build_scene(h, r, rel_az, subject_name, cfg, machine_cfg, cams="both",
+                overhead_h=None):
     """
-    Boot Isaac, build the room, load the character, place two ZED cameras, and start
-    streaming via two ZEDAnnotators. Returns (app, stage, annotator_a, annotator_b).
+    Boot Isaac, build the room, load the character, place the ZED cameras, and start
+    streaming via ZEDAnnotators.
+    Returns (app, stage, annotator_a, annotator_b, annotator_c) — annotator_c is None
+    unless overhead_h is set.
 
-    h, r        : camera height and radius (metres)
+    h, r        : ring camera height and radius (metres)
     rel_az      : cam B azimuth relative to cam A
     subject_name: name from experiment.yaml subject_positions
     cfg         : experiment.yaml dict
     machine_cfg : machine.<name>.yaml dict (headless, zed_ext_path, reference_scene)
-    cams        : "both" | "a" | "b" — which annotators to start (diagnostic;
+    cams        : "both" | "a" | "b" — which ring annotators to start (diagnostic;
                   the skipped one is returned as None). Camera prims are always
                   placed so the scene geometry is identical either way.
+    overhead_h  : if set, also place + stream a centered overhead (nadir) cam C at
+                  this height over the workspace centre, looking straight down.
     """
     # 1) SimulationApp FIRST, before any omni/isaacsim imports.
     from isaacsim import SimulationApp
@@ -375,6 +380,16 @@ def build_scene(h, r, rel_az, subject_name, cfg, machine_cfg, cams="both"):
     R_b = camera_rig.rotation_matrix_from_look_at(pos_b, aim_point)
     _place_camera(stage, "/World/ZED_Camera_B", zed_usd, pos_b, R_b)
 
+    # 6b) Optional centered overhead (nadir) cam C over the workspace centre,
+    #     looking straight down at aim height. The look-at fall back (up=+Y)
+    #     handles the vertical forward vector.
+    if overhead_h is not None:
+        center = cfg.get("workspace", {}).get("center", [0.0, 0.0])
+        pos_c = camera_rig.overhead_position(overhead_h, center)
+        aim_c = [center[0], center[1], subject_pos[2] + aim_h]
+        R_c = camera_rig.rotation_matrix_from_look_at(pos_c, aim_c)
+        _place_camera(stage, "/World/ZED_Camera_C", zed_usd, pos_c, R_c)
+
     # 7) Render one frame so the camera render products exist before annotators.
     app.update()
 
@@ -395,7 +410,7 @@ def build_scene(h, r, rel_az, subject_name, cfg, machine_cfg, cams="both"):
         annotator_a = ZEDAnnotator(
             camera_prim=[prim_a.GetPath()],
             camera_model="ZED_X",
-            streaming_port=cfg["cam_a"]["port"],          # 30000
+            streaming_port=cfg["cam_a"]["port"],          # 31000
             resolution=res,
             fps=fps,
             transport_layer_mode=transport,
@@ -405,13 +420,26 @@ def build_scene(h, r, rel_az, subject_name, cfg, machine_cfg, cams="both"):
         annotator_b = ZEDAnnotator(
             camera_prim=[prim_b.GetPath()],
             camera_model="ZED_X",
-            streaming_port=cfg["cam_b"]["port"],          # 30002
+            streaming_port=cfg["cam_b"]["port"],          # 31002
             resolution=res,
             fps=fps,
             transport_layer_mode=transport,
             virtual_serial_number=str(cfg["cam_b"]["serial"]),   # "1002"
         )
 
+    annotator_c = None
+    if overhead_h is not None:
+        prim_c = stage.GetPrimAtPath("/World/ZED_Camera_C")
+        annotator_c = ZEDAnnotator(
+            camera_prim=[prim_c.GetPath()],
+            camera_model="ZED_X",
+            streaming_port=cfg["cam_c"]["port"],          # 31004
+            resolution=res,
+            fps=fps,
+            transport_layer_mode=transport,
+            virtual_serial_number=str(cfg["cam_c"]["serial"]),   # "1003"
+        )
+
     # 9) Sentinel for sweep.py.
     print("STREAMING_STARTED", flush=True)
-    return app, stage, annotator_a, annotator_b
+    return app, stage, annotator_a, annotator_b, annotator_c

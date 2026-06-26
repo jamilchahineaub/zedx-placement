@@ -250,6 +250,28 @@ def _primary_body(pred_frame):
     return best
 
 
+def _gt_matched_body(gt_joints, pred_frame, transform_fn, min_joints=7):
+    """Pick the predicted body that best matches the GT person this frame: the
+    body with the lowest mean per-joint error to GT (over its mapped joints),
+    among bodies exposing at least `min_joints` mapped joints.
+
+    Used ONLY for the 3-camera (overhead) path. A third camera spawns extra
+    GHOST bodies (phantom fused skeletons with no real human), and the
+    most-complete-skeleton heuristic in _primary_body locks onto a ghost in a
+    large fraction of frames, inflating MPJPE/jitter. Matching the scored body
+    to the single real person (standard multi-person MPJPE) measures the actual
+    tracking quality. Ghost COUNT is still penalized separately via id_drops."""
+    best, best_err = None, float("inf")
+    for b in pred_frame["bodies"].values():
+        e = _frame_errors(gt_joints, b["joints"], transform_fn)
+        if len(e) < min_joints:
+            continue
+        m = sum(e.values()) / len(e)
+        if m < best_err:
+            best, best_err = b, m
+    return best
+
+
 def _frame_errors(gt_joints, pred_zed_joints, transform_fn):
     """Per-mapped-joint Euclidean error (mm) for one matched frame."""
     errs = {}
@@ -278,14 +300,18 @@ def _aligned_and_offset(err_vectors_m):
     return aln, off_mm
 
 
-def mpjpe_pck_per_frame(pairs, transform_fn):
+def mpjpe_pck_per_frame(pairs, transform_fn, select=None):
     """Pool per-(frame,joint) errors over matched frames. Alignment (offset removal)
     is done PER FRAME. Returns (mpjpe, pck30, pck50, per_joint_mean, mpjpe_aligned,
-    registration_offset)."""
+    registration_offset).
+
+    select: optional callable (gt_f, pred_f) -> body, choosing which predicted
+    body to score each frame. Defaults to _primary_body (2-camera behavior). The
+    3-camera path passes a GT-matched selector to ignore ghost bodies."""
     per_joint = {}
     abs_pool, aln_pool, offs = [], [], []
     for gt_f, pred_f in pairs:
-        body = _primary_body(pred_f)
+        body = select(gt_f, pred_f) if select else _primary_body(pred_f)
         if body is None:
             continue
         vecs, names = [], []
@@ -317,13 +343,17 @@ def mpjpe_pck_per_frame(pairs, transform_fn):
     return mpjpe, pck30, pck50, per_joint_mean, mpjpe_aln, reg_off
 
 
-def compute_jitter_variance(pairs, transform_fn):
+def compute_jitter_variance(pairs, transform_fn, select=None):
     """Mean over joints of the temporal variance (mm^2) of the per-joint
     prediction error across matched frames — how much tracking wobbles around
-    truth. Lower is better. NaN if too few frames."""
+    truth. Lower is better. NaN if too few frames.
+
+    select: see mpjpe_pck_per_frame. Default _primary_body (2-cam); the 3-cam
+    path passes a GT-matched selector so jitter reflects the real person, not
+    frame-to-frame ghost swaps."""
     per_joint = {}
     for gt_f, pred_f in pairs:
-        body = _primary_body(pred_f)
+        body = select(gt_f, pred_f) if select else _primary_body(pred_f)
         if body is None:
             continue
         for k, v in _frame_errors(gt_f["joints"], body["joints"], transform_fn).items():
@@ -354,7 +384,7 @@ def compute_id_drops(pred_frames):
 
 def compute_metrics(gt_csv, pred_csv, meta, h, r, rel_az_deg, cfg,
                     subject_pos=(0.0, 0.0, 0.0), mode="fusion",
-                    conf_min=0.0, subject_pos_name="center"):
+                    conf_min=0.0, subject_pos_name="center", overhead_h=None):
     """
     Full results.csv row (every column from CLAUDE.md).
 
@@ -363,12 +393,18 @@ def compute_metrics(gt_csv, pred_csv, meta, h, r, rel_az_deg, cfg,
     meta     : dict from the receiver's _meta.json (frames_grabbed,
                frames_with_bodies) — or {} (coverage = NaN)
     mode     : "fusion" | "single"
+    overhead_h : if set, a centered overhead (nadir) cam C is part of the layout;
+                 adds cam-C geometry columns (accuracy columns are camera-count
+                 agnostic — they come from the fused prediction either way).
     """
     aim_h = cfg.get("aim_height_m", 1.0)
     aim_point = [subject_pos[0], subject_pos[1], subject_pos[2] + aim_h]
     cam_a_az = cfg["cam_a"]["azimuth_deg"]
     pos_a = camera_rig.camera_position(cam_a_az, r, h, subject_pos)
     pos_b = camera_rig.camera_position(cam_a_az + rel_az_deg, r, h, subject_pos)
+    center = cfg.get("workspace", {}).get("center", [0.0, 0.0])
+    pos_c = (camera_rig.overhead_position(overhead_h, center)
+             if overhead_h is not None else None)
 
     gt_avg, n_gt_frames = load_gt_average(gt_csv, joint_filter=set(joint_map.isaac_names()))
     pred_avg_raw, n_pred_rows = load_pred_average(pred_csv, conf_min=conf_min)
@@ -392,9 +428,13 @@ def compute_metrics(gt_csv, pred_csv, meta, h, r, rel_az_deg, cfg,
         pred_frames = load_pred_per_frame(pred_csv, conf_min=conf_min)
         offset_s = float((cfg.get("metrics") or {}).get("frame_offset_s", 0.0))
         pairs = associate_frames(gt_frames, pred_frames, offset_s=offset_s)
+        # 3-cam (overhead) adds ghost bodies -> score the GT-matched real person,
+        # not the most-complete skeleton. 2-cam path keeps _primary_body (select=None).
+        select = (lambda gt_f, pred_f: _gt_matched_body(gt_f["joints"], pred_f, transform_fn)) \
+            if overhead_h is not None else None
         (mpjpe, pck30, pck50, per_joint,
-         mpjpe_aligned, reg_offset) = mpjpe_pck_per_frame(pairs, transform_fn)
-        jitter_var = compute_jitter_variance(pairs, transform_fn)
+         mpjpe_aligned, reg_offset) = mpjpe_pck_per_frame(pairs, transform_fn, select=select)
+        jitter_var = compute_jitter_variance(pairs, transform_fn, select=select)
         id_drops = compute_id_drops(pred_frames)
     else:
         pred_iso = {n: transform_fn(p) for n, p in pred_avg_raw.items()}
@@ -412,12 +452,12 @@ def compute_metrics(gt_csv, pred_csv, meta, h, r, rel_az_deg, cfg,
     # CANONICAL_SKELETON placeholder per the Phase 6 plan).
     gt_joints = list(gt_avg.values())
     vis = geo_prescreener.prescreen(pos_a, pos_b, gt_joints or None, cfg,
-                                    subject=subject_pos)
+                                    subject=subject_pos, cam_c_pos=pos_c)
 
     frames = meta.get("frames_grabbed") or 0
     coverage = (meta.get("frames_with_bodies", 0) / frames) if frames else NAN
 
-    return {
+    row = {
         "h_m": h,
         "r_m": r,
         "rel_az_deg": rel_az_deg,
@@ -444,6 +484,17 @@ def compute_metrics(gt_csv, pred_csv, meta, h, r, rel_az_deg, cfg,
         "_per_joint_mm": per_joint,
         "_gravity_axis_deg": grav_deg,
     }
+    if overhead_h is not None:
+        # 3-cam (overhead) extras — appended columns, blank/NaN for 2-cam rows.
+        row.update({
+            "cam_c_h_m": overhead_h,
+            "joint_visibility_cam_c": vis.get("joints_visible_cam_c", NAN),
+            "unique_contribution_cam_c": vis.get("unique_contribution_cam_c", NAN),
+            "convergence_ab_deg": vis.get("convergence_ab_deg", NAN),
+            "convergence_ac_deg": vis.get("convergence_ac_deg", NAN),
+            "convergence_bc_deg": vis.get("convergence_bc_deg", NAN),
+        })
+    return row
 
 
 RESULTS_COLUMNS = [
@@ -453,6 +504,9 @@ RESULTS_COLUMNS = [
     "detection_coverage", "joint_visibility_cam_a", "joint_visibility_cam_b",
     "joint_visibility_either", "joint_visibility_both",
     "unique_contribution_cam_b", "jitter_variance", "id_drops",
+    # 3-cam (overhead) columns — appended; blank for 2-cam rows.
+    "cam_c_h_m", "joint_visibility_cam_c", "unique_contribution_cam_c",
+    "convergence_ab_deg", "convergence_ac_deg", "convergence_bc_deg",
 ]
 
 

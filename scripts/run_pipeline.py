@@ -47,7 +47,7 @@ def shm_snapshot():
 
 
 def launch_isaac(h, r, rel_az, subject_name, layout_id, machine, machine_cfg,
-                 duration, cams="both", transport=None):
+                 duration, cams="both", transport=None, overhead_h=None):
     os.makedirs(LOGS_DIR, exist_ok=True)
     log_path = os.path.join(LOGS_DIR, f"isaac_{layout_id}_{_ts()}.log")
     cmd = [machine_cfg["isaac_python"], os.path.join(REPO, "isaac", "run_episode.py"),
@@ -56,6 +56,8 @@ def launch_isaac(h, r, rel_az, subject_name, layout_id, machine, machine_cfg,
            "--layout-id", layout_id, "--machine", machine, "--cams", cams]
     if transport:
         cmd += ["--transport", transport]
+    if overhead_h is not None:
+        cmd += ["--overhead-h", str(overhead_h)]
     log_f = open(log_path, "w")
     proc = subprocess.Popen(cmd, stdout=log_f, stderr=subprocess.STDOUT,
                             stdin=subprocess.DEVNULL, cwd=REPO,
@@ -249,6 +251,9 @@ def main():
     ap.add_argument("--conf", type=int, default=20)
     ap.add_argument("--cams", choices=["both", "a", "b"], default="both")
     ap.add_argument("--transport", choices=["BOTH", "NETWORK", "IPC"], default=None)
+    ap.add_argument("--overhead-h", type=float, default=None,
+                    help="add a centered overhead (nadir) cam C at this height "
+                         "(3-cam fusion). Only valid with --mode fusion.")
     ap.add_argument("--skip-preflight", action="store_true")
     args = ap.parse_args()
 
@@ -256,6 +261,8 @@ def main():
     port_a, port_b = cfg["cam_a"]["port"], cfg["cam_b"]["port"]
     expected = {port_a, port_b} if args.cams == "both" else (
         {port_a} if args.cams == "a" else {port_b})
+    if args.overhead_h is not None:
+        expected.add(cfg["cam_c"]["port"])
 
     # 1) Preflight
     if not args.skip_preflight:
@@ -267,7 +274,8 @@ def main():
     proc, log_path = launch_isaac(args.h, args.r, args.rel_az, args.subject_name,
                                   args.layout_id, args.machine, machine_cfg,
                                   args.episode_duration, cams=args.cams,
-                                  transport=args.transport)
+                                  transport=args.transport,
+                                  overhead_h=args.overhead_h)
     ok = False
     reason = "unknown"
     result = {}
@@ -307,12 +315,13 @@ def main():
             fusion_cfg_path = os.path.join(
                 REPO, "results", "layouts", f"fusion_config_{args.layout_id}.json")
             if not os.path.exists(fusion_cfg_path):
-                gen = subprocess.run(
-                    [machine_cfg.get("zed_python", "python3"),
-                     os.path.join(REPO, "zed", "make_fusion_config.py"),
-                     "--out", fusion_cfg_path, "--h", str(args.h),
-                     "--r", str(args.r), "--rel-az", str(args.rel_az)],
-                    cwd=REPO, capture_output=True, text=True)
+                gen_cmd = [machine_cfg.get("zed_python", "python3"),
+                           os.path.join(REPO, "zed", "make_fusion_config.py"),
+                           "--out", fusion_cfg_path, "--h", str(args.h),
+                           "--r", str(args.r), "--rel-az", str(args.rel_az)]
+                if args.overhead_h is not None:
+                    gen_cmd += ["--overhead-h", str(args.overhead_h)]
+                gen = subprocess.run(gen_cmd, cwd=REPO, capture_output=True, text=True)
                 print(gen.stdout + gen.stderr, flush=True)
             fres = run_zed_fusion(fusion_cfg_path, args.layout_id, machine_cfg,
                                   duration=args.capture_duration,

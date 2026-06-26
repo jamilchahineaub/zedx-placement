@@ -82,3 +82,47 @@ def test_canonical_skeleton_translates_with_subject():
     moved = gp.canonical_skeleton((1.5, -2.0, 0))
     assert moved[0][0] == pytest.approx(base[0][0] + 1.5)
     assert moved[0][1] == pytest.approx(base[0][1] - 2.0)
+
+
+# ---------------------------------------------------------------------------
+# Third (overhead/nadir) camera
+# ---------------------------------------------------------------------------
+
+def test_overhead_none_is_byte_identical_to_2cam():
+    # Passing cam_c_pos=None must yield exactly the old 2-cam dict (no cam_c keys).
+    a, b = _cams(90, r=4, h=2.5)
+    base = gp.prescreen(a, b, None, CFG)
+    same = gp.prescreen(a, b, None, CFG, cam_c_pos=None)
+    assert same == base
+    assert "joints_visible_cam_c" not in same
+    assert "convergence_ac_deg" not in same
+
+
+def test_overhead_adds_cam_c_keys_and_mean_convergence():
+    a, b = _cams(90, r=4, h=2.5)
+    c = cr.overhead_position(4.5, (0, 0))      # centered overhead at 4.5 m
+    out = gp.prescreen(a, b, None, CFG, cam_c_pos=c)
+    # new keys present
+    for k in ("joints_visible_cam_c", "unique_contribution_cam_c",
+              "convergence_ab_deg", "convergence_ac_deg", "convergence_bc_deg"):
+        assert k in out
+    # overhead camera sees most of the (canonical) skeleton from above
+    assert out["joints_visible_cam_c"] > 0.7
+    # summary convergence is the mean of the three pairwise angles
+    mean = (out["convergence_ab_deg"] + out["convergence_ac_deg"]
+            + out["convergence_bc_deg"]) / 3.0
+    assert out["convergence_angle_deg"] == pytest.approx(mean)
+    # overhead-to-ring pairs add real vertical-plane baseline
+    assert out["convergence_ac_deg"] > 20.0
+    assert out["convergence_bc_deg"] > 20.0
+
+
+def test_overhead_can_only_help_triangulable_coverage():
+    # Adding a 3rd camera never reduces the union visibility or triangulable set.
+    a, b = _cams(30, r=4, h=2.5)               # shallow ring separation
+    two = gp.prescreen(a, b, None, CFG)
+    c = cr.overhead_position(4.5, (0, 0))
+    three = gp.prescreen(a, b, None, CFG, cam_c_pos=c)
+    assert three["joints_visible_either"] >= two["joints_visible_either"]
+    assert (three["joints_visible_both_triangulable"]
+            >= two["joints_visible_both_triangulable"])

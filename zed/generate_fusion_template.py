@@ -9,9 +9,12 @@ def make_template(out_path: str):
 
     configs = []
 
+    # Stream ports use the 31000 band (the real ZED-X ROS2 driver binds 30000-30003).
+    # cam_c (1003) is the optional centered overhead camera used by the 3-cam sweep.
     for serial, stream_port, publish_port in [
-        (1001, 30000, 30010),
-        (1002, 30002, 30012),
+        (1001, 31000, 30010),
+        (1002, 31002, 30012),
+        (1003, 31004, 30014),
     ]:
         fc = sl.FusionConfiguration()
         fc.serial_number = serial
@@ -41,7 +44,8 @@ def make_template(out_path: str):
         sl.UNIT.METER
     )
     print(f"Template written to: {out_path}")
-    print("Verify it has two entries, then commit as zed/zed360_template.json")
+    print("Verify it has three entries (1001/1002/1003), then commit as "
+          "zed/zed360_template.json")
 
 if __name__ == "__main__":
     out = sys.argv[1] if len(sys.argv) > 1 else "zed/zed360_template.json"

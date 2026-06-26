@@ -7,7 +7,7 @@
 # Flow:
 #   1. Load machine + experiment config
 #   2. is_valid_layout gate  -> GEO_SKIPPED + exit 0 if invalid
-#   3. build_scene(...)      -> (app, stage, annotator_a, annotator_b)
+#   3. build_scene(...)      -> (app, stage, annotator_a, annotator_b, annotator_c)
 #   4. Start gt_logger + timeline
 #   5. Tick loop for --duration s: app.update(), log joints each frame
 #   6. Stop, save ground_truth CSV, EPISODE_DONE, destroy annotators, close app
@@ -44,6 +44,9 @@ def main():
     ap.add_argument("--cams", choices=["both", "a", "b"], default="both",
                     help="which ZED annotators to start (diagnostic: 'a' forces a "
                          "single streamer so streamer ID 0 lands on cam A's port)")
+    ap.add_argument("--overhead-h", type=float, default=None,
+                    help="if set, also stream a centered overhead (nadir) cam C at "
+                         "this height over the workspace centre")
     ap.add_argument("--transport", choices=["BOTH", "NETWORK", "IPC"], default=None,
                     help="override zed_stream.transport from experiment.yaml")
     args = ap.parse_args()
@@ -65,9 +68,9 @@ def main():
     # 3) Build the scene (this boots SimulationApp and prints STREAMING_STARTED).
     import scene_builder
     try:
-        app, stage, annotator_a, annotator_b = scene_builder.build_scene(
+        app, stage, annotator_a, annotator_b, annotator_c = scene_builder.build_scene(
             args.h, args.r, args.rel_az, args.subject_name, cfg, machine_cfg,
-            cams=args.cams,
+            cams=args.cams, overhead_h=args.overhead_h,
         )
     except Exception as e:
         print(f"RUN_FAILED build_scene raised: {e}")
@@ -104,7 +107,7 @@ def main():
         print(f"RUN_FAILED tick loop raised: {e}")
         timeline.stop()
         try:
-            for ann in (annotator_a, annotator_b):
+            for ann in (annotator_a, annotator_b, annotator_c):
                 if ann is not None:
                     ann.destroy()
         finally:
@@ -122,7 +125,7 @@ def main():
 
     # 10) Cleanup annotators, 11) close app
     try:
-        for ann in (annotator_a, annotator_b):
+        for ann in (annotator_a, annotator_b, annotator_c):
             if ann is not None:
                 ann.destroy()
     finally:

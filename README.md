@@ -32,11 +32,13 @@ python3 -m pytest analysis/tests/ -v
 
 ## Ports
 
-Cameras stream on localhost ports 30000 (cam A) and 30002 (cam B). A crashed run leaves
-them bound and the next run fails.
+Cameras stream on localhost ports 31000 (cam A), 31002 (cam B), and 31004 (cam C, the
+optional overhead camera). A crashed run leaves them bound and the next run fails. The
+31000 band is deliberately separate from the real ZED-X ROS2 driver (`zedx_driver_ros2`
+container), which binds 30000-30003 on the capture PC.
 
 ```bash
-ss -tulnp | grep ':3000[0-9]'        # check
+ss -tulnp | grep ':3100[0-9]'        # check
 python3 scripts/preflight.py --machine laptop   # kill + free (easiest)
 
 # manual
@@ -107,7 +109,7 @@ machine needs internet. To change the scene, re-save into `assets/test.usd` and 
   `RESULTS_COLUMNS`; joint pairing in `analysis/joint_map.py`. Run the tests after.
 - **Sweep** — grid in `experiment.yaml`; search logic in `sweep.py` (`layouts()` + gates).
   It only calls `camera_rig.evaluate_layout`.
-- **Third camera** — add `cam_c` (port 30004/serial 1003) in experiment.yaml; add a third
+- **Third camera** — add `cam_c` (port 31004/serial 1003) in experiment.yaml; add a third
   annotator + ZED_X prim in `scene_builder.py`; a third pose in `make_fusion_config.py` +
   `zed360_template.json`; open/subscribe it in `zed_fusion.py`.
 

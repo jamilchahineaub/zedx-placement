@@ -100,17 +100,26 @@ def load_results(path):
 
 
 def aggregate_by_layout(rows, subject=None):
-    """Group by (h_m, r_m, rel_az_deg), aggregate across subjects (NaN-aware mean;
-    plus mpjpe_worst and coverage_min for worst-case checks)."""
+    """Group by (h_m, r_m, rel_az_deg) — plus cam_c_h_m when present, so each
+    overhead height ranks as its own 3-cam layout. Aggregate across subjects
+    (NaN-aware mean; plus mpjpe_worst and coverage_min for worst-case checks)."""
     if subject is not None:
         rows = [r for r in rows if r.get("subject_pos_name") == subject]
+    # Treat the overhead camera height as part of the layout identity only if the
+    # results file actually carries it (2-cam CSVs have no cam_c_h_m -> behaves as before).
+    has_cam_c = any(not _isnan(r.get("cam_c_h_m", NAN)) for r in rows)
     groups = {}
     for r in rows:
         key = (round(r["h_m"], 6), round(r["r_m"], 6), round(r["rel_az_deg"], 6))
+        if has_cam_c:
+            cc = r.get("cam_c_h_m", NAN)
+            key = key + (round(cc, 6) if not _isnan(cc) else None,)
         groups.setdefault(key, []).append(r)
     layouts = []
     for key, grp in groups.items():
         agg = {"h_m": key[0], "r_m": key[1], "rel_az_deg": key[2], "n_subjects": len(grp)}
+        if has_cam_c:
+            agg["cam_c_h_m"] = key[3]
         agg["mpjpe_mm"] = _nanmean([g.get("mpjpe_mm", NAN) for g in grp])
         agg["mpjpe_worst"] = _nanmax([g.get("mpjpe_mm", NAN) for g in grp])
         agg["coverage_min"] = _nanmin([g.get("detection_coverage", NAN) for g in grp])
@@ -307,7 +316,11 @@ def _fmt(x):
 
 
 def layout_label(lay):
-    return f"h{_fmt(lay['h_m'])} r{_fmt(lay['r_m'])} az{int(round(lay['rel_az_deg']))}"
+    base = f"h{_fmt(lay['h_m'])} r{_fmt(lay['r_m'])} az{int(round(lay['rel_az_deg']))}"
+    cc = lay.get("cam_c_h_m")
+    if cc is not None and not _isnan(cc):
+        base += f" oh{_fmt(cc)}"
+    return base
 
 
 def _jit_std(r):
@@ -349,11 +362,16 @@ def mounting_lines(ranked, n=3):
         return ["  (no valid layouts — every layout was flagged; check the sweep / thresholds)"]
     for idx, r in enumerate(cands, 1):
         h, rr, az = r["h_m"], r["r_m"], int(round(r["rel_az_deg"]))
-        out.append(f"  {idx}. h={h:g}m, r={rr:g}m, az={az}°   "
+        cc = r.get("cam_c_h_m")
+        oh = f", overhead cam at {cc:g} m" if (cc is not None and not _isnan(cc)) else ""
+        out.append(f"  {idx}. h={h:g}m, r={rr:g}m, az={az}°{oh}   "
                    f"[composite {r['score']:.3f} | pose {_fmt(r.get('mpjpe_aligned_mm'))}mm | "
                    f"abs {_fmt(r.get('mpjpe_mm'))}mm | offset {_fmt(r.get('registration_offset_mm'))}mm]")
-        out.append(f"     → mount both cameras at {h:g} m height, {rr:g} m from the subject, "
-                   f"separated by {az}° around the subject")
+        mount = (f"     → mount both cameras at {h:g} m height, {rr:g} m from the subject, "
+                 f"separated by {az}° around the subject")
+        if cc is not None and not _isnan(cc):
+            mount += f", plus an overhead camera at {cc:g} m looking straight down"
+        out.append(mount)
     return out
 
 
@@ -428,7 +446,11 @@ def render(ranked, notes, pareto_axes, cfg, args):
 def write_csv(path, ranked):
     os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
     axis_cols = ["pose_fidelity", "absolute_placement", "stability"]
-    cols = (["rank", "h_m", "r_m", "rel_az_deg", "score", "valid", "flag_reason", "pareto"]
+    # Include cam_c_h_m only if any ranked layout carries it (3-cam results).
+    cam_c_cols = ["cam_c_h_m"] if any(
+        r.get("cam_c_h_m") is not None and not _isnan(r.get("cam_c_h_m")) for r in ranked) else []
+    cols = (["rank", "h_m", "r_m", "rel_az_deg"] + cam_c_cols
+            + ["score", "valid", "flag_reason", "pareto"]
             + axis_cols
             + ["mpjpe_aligned_mm", "mpjpe_mm", "registration_offset_mm",
                "id_drops", "jitter_variance", "joint_visibility_both",

@@ -46,8 +46,11 @@ import yaml  # noqa: E402
 
 
 def _serial_to_port(cfg):
-    return {int(cfg["cam_a"]["serial"]): int(cfg["cam_a"]["port"]),
-            int(cfg["cam_b"]["serial"]): int(cfg["cam_b"]["port"])}
+    """Map serial -> stream port for every cam_* entry in experiment.yaml
+    (cam_a, cam_b, and the optional overhead cam_c)."""
+    return {int(c["serial"]): int(c["port"]) for k, c in cfg.items()
+            if k.startswith("cam_") and isinstance(c, dict)
+            and "serial" in c and "port" in c}
 
 
 def main():
@@ -69,8 +72,9 @@ def main():
 
     confs = sl.read_fusion_configuration_file(
         args.fusion_config, sl.COORDINATE_SYSTEM.RIGHT_HANDED_Y_UP, sl.UNIT.METER)
-    if len(confs) < 2:
-        print(f"RUN_FAILED fusion config has {len(confs)} cameras (need 2): "
+    n_cams = len(confs)
+    if n_cams < 2:
+        print(f"RUN_FAILED fusion config has {n_cams} cameras (need >= 2): "
               f"{args.fusion_config}")
         sys.exit(1)
 
@@ -99,7 +103,7 @@ def main():
         port = serial_to_port.get(conf.serial_number)
         if port is None:
             print(f"RUN_FAILED fusion config serial {conf.serial_number} not in "
-                  f"experiment.yaml cam_a/cam_b")
+                  f"experiment.yaml cam_a/cam_b/cam_c")
             sys.exit(1)
         zed = zed_single.open_camera_from_stream(
             port, retries=2, open_timeout=args.open_timeout)
@@ -156,7 +160,10 @@ def main():
             print(f"RUN_FAILED fusion.subscribe serial {runtime_serial}: {status}")
         else:
             subscribed += 1
-    if subscribed < 2:
+    # Require EVERY camera in the fusion config to subscribe — a 3-cam run with a
+    # dead overhead camera is not a valid 3-cam result.
+    if subscribed < n_cams:
+        print(f"RUN_FAILED only {subscribed}/{n_cams} cameras subscribed")
         for zed in senders.values():
             zed.close()
         sys.exit(1)

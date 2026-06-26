@@ -46,8 +46,10 @@ def load_cfgs(machine):
 
 def stream_ports(cfg):
     """All ports a run can touch: each camera's RTP port + its control port (+1),
-    plus the receiver's +2 fallback cascade landing spots."""
-    base = sorted({cfg["cam_a"]["port"], cfg["cam_b"]["port"]})
+    plus the receiver's +2 fallback cascade landing spots. Covers every cam_*
+    entry in experiment.yaml (so the optional overhead cam_c port is freed too)."""
+    base = sorted({c["port"] for k, c in cfg.items()
+                   if k.startswith("cam_") and isinstance(c, dict) and "port" in c})
     ports = set()
     for p in base:
         ports.update({p, p + 1})

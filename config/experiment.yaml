@@ -9,14 +9,31 @@ relative_azimuths: [30, 60, 90, 120, 150, 180]
 max_tilt_deg: 40.0
 aim_height_m: 1.0
 
+# Sim stream ports use the 31000 band to avoid clashing with the real ZED-X
+# ROS2 driver (zedx_driver_ros2 container) which binds 30000-30003 on this PC.
 cam_a:
   azimuth_deg: 0
   serial:      1001
-  port:        30000
+  port:        31000
 
 cam_b:
   serial: 1002
-  port:   30002
+  port:   31002
+
+# Optional THIRD camera: centered overhead (nadir), looking straight down at the
+# workspace centre. Only used by the 3-cam stage-2 sweep (scripts/sweep_3cam.py);
+# the normal 2-cam sweep never references it. Its X,Y are the workspace centre;
+# its height is swept per `overhead:` below (NOT azimuth/radius like the ring cams).
+cam_c:
+  serial: 1003
+  port:   31004
+
+# Stage-2 overhead sweep (scripts/sweep_3cam.py): for each of the top_n ranked
+# 2-cam layouts, add cam_c and sweep its height over h_range (inclusive) in h_step.
+overhead:
+  h_range: [3.5, 7.0]
+  h_step:  0.5
+  top_n:   15
 
 subject_positions:
   - name: center
@@ -106,9 +123,10 @@ triangulable_max_deg: 140
 # Node whose uiName is "ZED Camera Helper". 2-cam port-based variant (matches test.usd).
 # Source: exts/sl.sensor.camera/sl/sensor/camera/nodes/SlCameraStreamer.ogn
 # Cameras are distinguished by streamingPort + cameraPrim. This node has NO serial
-# field by design — serials 1001/1002 live only in zed/zed360_template.json, paired
-# to ports 30000/30002. Invariant: cam A = port 30000 <-> serial 1001;
-#                                   cam B = port 30002 <-> serial 1002.
+# field by design — serials 1001/1002/1003 live only in zed/zed360_template.json,
+# paired to ports above. Invariant: cam A = port 31000 <-> serial 1001;
+#                                   cam B = port 31002 <-> serial 1002;
+#                                   cam C = port 31004 <-> serial 1003 (overhead).
 zed_helper_node_type: "sl.sensor.camera.ZED_Camera"
 zed_helper_node_type_version: 2
 
