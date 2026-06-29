@@ -47,7 +47,9 @@ def shm_snapshot():
 
 
 def launch_isaac(h, r, rel_az, subject_name, layout_id, machine, machine_cfg,
-                 duration, cams="both", transport=None, overhead_h=None):
+                 duration, cams="both", transport=None, overhead_h=None,
+                 ring_c_az=None, chest_tags=False, marker_front=None, marker_back=None,
+                 spin_deg_s=None):
     os.makedirs(LOGS_DIR, exist_ok=True)
     log_path = os.path.join(LOGS_DIR, f"isaac_{layout_id}_{_ts()}.log")
     cmd = [machine_cfg["isaac_python"], os.path.join(REPO, "isaac", "run_episode.py"),
@@ -58,6 +60,12 @@ def launch_isaac(h, r, rel_az, subject_name, layout_id, machine, machine_cfg,
         cmd += ["--transport", transport]
     if overhead_h is not None:
         cmd += ["--overhead-h", str(overhead_h)]
+    if ring_c_az is not None:
+        cmd += ["--ring-c-az", str(ring_c_az)]
+    if chest_tags:
+        cmd += ["--chest-tags", "--marker-front", marker_front, "--marker-back", marker_back]
+    if spin_deg_s is not None:
+        cmd += ["--spin-deg-s", str(spin_deg_s)]
     log_f = open(log_path, "w")
     proc = subprocess.Popen(cmd, stdout=log_f, stderr=subprocess.STDOUT,
                             stdin=subprocess.DEVNULL, cwd=REPO,
@@ -167,7 +175,7 @@ def run_zed_single(port, layout_id, machine_cfg, duration=20.0, model="accurate"
 
 
 def run_zed_fusion(fusion_config, layout_id, machine_cfg, duration=20.0,
-                   model="accurate", conf=20, overall_timeout=None):
+                   model="accurate", conf=20, overall_timeout=None, detect_tags=False):
     """Run zed/zed_fusion.py. Returns dict(rc, rows, csv)."""
     os.makedirs(LOGS_DIR, exist_ok=True)
     log_path = os.path.join(LOGS_DIR, f"zed_fusion_{layout_id}_{_ts()}.log")
@@ -175,6 +183,8 @@ def run_zed_fusion(fusion_config, layout_id, machine_cfg, duration=20.0,
            os.path.join(REPO, "zed", "zed_fusion.py"),
            "--fusion-config", fusion_config, "--layout-id", layout_id,
            "--duration", str(duration), "--model", model, "--conf", str(conf)]
+    if detect_tags:
+        cmd += ["--detect-tags"]
     if overall_timeout is None:
         overall_timeout = duration + 150  # two opens + two model loads + margin
     print(f"pipeline: starting zed_fusion (capture {duration}s, "
@@ -194,6 +204,35 @@ def run_zed_fusion(fusion_config, layout_id, machine_cfg, duration=20.0,
 
     rows = 0
     csv_path = os.path.join(REPO, "results", "layouts", f"zed_pred_{layout_id}.csv")
+    if os.path.exists(csv_path):
+        with open(csv_path) as f:
+            rows = max(0, sum(1 for _ in f) - 1)
+    return {"rc": proc.returncode, "rows": rows, "csv": csv_path, "log": log_path}
+
+
+def run_zed_tag_detect(layout_id, machine_cfg, duration=20.0, overall_timeout=None):
+    """Run zed/zed_tag_detect.py (ArUco detection on the 3 streams). Returns dict(rc, csv)."""
+    os.makedirs(LOGS_DIR, exist_ok=True)
+    log_path = os.path.join(LOGS_DIR, f"zed_tag_{layout_id}_{_ts()}.log")
+    cmd = [machine_cfg.get("zed_python", "python3"),
+           os.path.join(REPO, "zed", "zed_tag_detect.py"),
+           "--layout-id", layout_id, "--duration", str(duration)]
+    if overall_timeout is None:
+        overall_timeout = duration + 150
+    print(f"pipeline: starting zed_tag_detect (capture {duration}s)", flush=True)
+    with open(log_path, "w") as log_f:
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                stdin=subprocess.DEVNULL, cwd=REPO, text=True)
+        try:
+            out, _ = proc.communicate(timeout=overall_timeout)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            out, _ = proc.communicate()
+            out += "\npipeline: KILLED by overall_timeout\n"
+        log_f.write(out)
+    print(out, flush=True)
+    csv_path = os.path.join(REPO, "results", "layouts", f"tag_detect_{layout_id}.csv")
+    rows = 0
     if os.path.exists(csv_path):
         with open(csv_path) as f:
             rows = max(0, sum(1 for _ in f) - 1)

@@ -117,6 +117,18 @@ def test_overhead_adds_cam_c_keys_and_mean_convergence():
     assert out["convergence_bc_deg"] > 20.0
 
 
+def test_ring_cam_c_aim_sees_the_subject():
+    # A RING cam C aimed at the subject must see the body; the old default (aim straight down
+    # below the camera, for a nadir cam) makes a ring cam C see almost nothing.
+    a, b = _cams(90, r=4, h=2.5)
+    c = cr.camera_position(45, 4, 2.5)                 # ring cam C off to the side
+    aim_at_subject = [0.0, 0.0, CFG["aim_height_m"]]
+    ring = gp.prescreen(a, b, None, CFG, cam_c_pos=c, cam_c_aim=aim_at_subject)
+    nadir = gp.prescreen(a, b, None, CFG, cam_c_pos=c)  # default: aim below the camera
+    assert ring["joints_visible_cam_c"] > 0.7          # ring cam C actually sees the body
+    assert ring["joints_visible_cam_c"] > nadir["joints_visible_cam_c"]
+
+
 def test_overhead_can_only_help_triangulable_coverage():
     # Adding a 3rd camera never reduces the union visibility or triangulable set.
     a, b = _cams(30, r=4, h=2.5)               # shallow ring separation

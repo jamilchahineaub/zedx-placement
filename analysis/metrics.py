@@ -384,7 +384,8 @@ def compute_id_drops(pred_frames):
 
 def compute_metrics(gt_csv, pred_csv, meta, h, r, rel_az_deg, cfg,
                     subject_pos=(0.0, 0.0, 0.0), mode="fusion",
-                    conf_min=0.0, subject_pos_name="center", overhead_h=None):
+                    conf_min=0.0, subject_pos_name="center", overhead_h=None,
+                    cam_c_az=None, tag_detect_csv=None):
     """
     Full results.csv row (every column from CLAUDE.md).
 
@@ -403,8 +404,14 @@ def compute_metrics(gt_csv, pred_csv, meta, h, r, rel_az_deg, cfg,
     pos_a = camera_rig.camera_position(cam_a_az, r, h, subject_pos)
     pos_b = camera_rig.camera_position(cam_a_az + rel_az_deg, r, h, subject_pos)
     center = cfg.get("workspace", {}).get("center", [0.0, 0.0])
-    pos_c = (camera_rig.overhead_position(overhead_h, center)
-             if overhead_h is not None else None)
+    # cam C is either a RING camera at cam_c_az (unified tag run) or a centered overhead one.
+    if cam_c_az is not None:
+        pos_c = camera_rig.camera_position(cam_c_az, r, h, subject_pos)
+    elif overhead_h is not None:
+        pos_c = camera_rig.overhead_position(overhead_h, center)
+    else:
+        pos_c = None
+    has_cam_c = pos_c is not None
 
     gt_avg, n_gt_frames = load_gt_average(gt_csv, joint_filter=set(joint_map.isaac_names()))
     pred_avg_raw, n_pred_rows = load_pred_average(pred_csv, conf_min=conf_min)
@@ -431,7 +438,7 @@ def compute_metrics(gt_csv, pred_csv, meta, h, r, rel_az_deg, cfg,
         # 3-cam (overhead) adds ghost bodies -> score the GT-matched real person,
         # not the most-complete skeleton. 2-cam path keeps _primary_body (select=None).
         select = (lambda gt_f, pred_f: _gt_matched_body(gt_f["joints"], pred_f, transform_fn)) \
-            if overhead_h is not None else None
+            if has_cam_c else None
         (mpjpe, pck30, pck50, per_joint,
          mpjpe_aligned, reg_offset) = mpjpe_pck_per_frame(pairs, transform_fn, select=select)
         jitter_var = compute_jitter_variance(pairs, transform_fn, select=select)
@@ -451,8 +458,13 @@ def compute_metrics(gt_csv, pred_csv, meta, h, r, rel_az_deg, cfg,
     # Visibility / triangulability on the REAL averaged GT joints (replaces the
     # CANONICAL_SKELETON placeholder per the Phase 6 plan).
     gt_joints = list(gt_avg.values())
+    # Ring cam C aims at the subject (chest height); overhead cam C uses the default nadir aim.
+    cam_c_aim = None
+    if cam_c_az is not None:
+        chest_h = (cfg.get("aruco", {}) or {}).get("chest_height_m", 1.3)
+        cam_c_aim = [subject_pos[0], subject_pos[1], subject_pos[2] + chest_h]
     vis = geo_prescreener.prescreen(pos_a, pos_b, gt_joints or None, cfg,
-                                    subject=subject_pos, cam_c_pos=pos_c)
+                                    subject=subject_pos, cam_c_pos=pos_c, cam_c_aim=cam_c_aim)
 
     frames = meta.get("frames_grabbed") or 0
     coverage = (meta.get("frames_with_bodies", 0) / frames) if frames else NAN
@@ -484,16 +496,34 @@ def compute_metrics(gt_csv, pred_csv, meta, h, r, rel_az_deg, cfg,
         "_per_joint_mm": per_joint,
         "_gravity_axis_deg": grav_deg,
     }
-    if overhead_h is not None:
-        # 3-cam (overhead) extras — appended columns, blank/NaN for 2-cam rows.
+    if has_cam_c:
+        # 3-cam extras — appended columns, blank/NaN for 2-cam rows.
         row.update({
-            "cam_c_h_m": overhead_h,
+            "cam_c_h_m": overhead_h if overhead_h is not None else NAN,
+            "cam_c_az_deg": cam_c_az if cam_c_az is not None else NAN,
             "joint_visibility_cam_c": vis.get("joints_visible_cam_c", NAN),
             "unique_contribution_cam_c": vis.get("unique_contribution_cam_c", NAN),
             "convergence_ab_deg": vis.get("convergence_ab_deg", NAN),
             "convergence_ac_deg": vis.get("convergence_ac_deg", NAN),
             "convergence_bc_deg": vis.get("convergence_bc_deg", NAN),
         })
+
+    # Unified run: fold in the ArUco tag-visibility ratio from the detection log.
+    if tag_detect_csv and os.path.exists(tag_detect_csv):
+        import tag_metrics
+        aru = cfg.get("aruco") or {}
+        tm = tag_metrics.compute(tag_detect_csv, int(aru.get("marker_id_front", 23)),
+                                 int(aru.get("marker_id_back", 42)))
+        if tm:
+            row.update({
+                "tag_visibility_ratio": tm["tag_visibility_ratio"],
+                "detect_rate_cam_a": tm["detect_rate_cam_a"],
+                "detect_rate_cam_b": tm["detect_rate_cam_b"],
+                "detect_rate_cam_c": tm["detect_rate_cam_c"],
+                "detect_rate_front": tm["detect_rate_front"],
+                "detect_rate_back": tm["detect_rate_back"],
+                "longest_blind_gap_s": tm["longest_blind_gap_s"],
+            })
     return row
 
 
@@ -504,9 +534,12 @@ RESULTS_COLUMNS = [
     "detection_coverage", "joint_visibility_cam_a", "joint_visibility_cam_b",
     "joint_visibility_either", "joint_visibility_both",
     "unique_contribution_cam_b", "jitter_variance", "id_drops",
-    # 3-cam (overhead) columns — appended; blank for 2-cam rows.
-    "cam_c_h_m", "joint_visibility_cam_c", "unique_contribution_cam_c",
+    # 3-cam columns — appended; blank for 2-cam rows.
+    "cam_c_h_m", "cam_c_az_deg", "joint_visibility_cam_c", "unique_contribution_cam_c",
     "convergence_ab_deg", "convergence_ac_deg", "convergence_bc_deg",
+    # unified tag-detection columns — blank for runs without --detect-tags.
+    "tag_visibility_ratio", "detect_rate_cam_a", "detect_rate_cam_b", "detect_rate_cam_c",
+    "detect_rate_front", "detect_rate_back", "longest_blind_gap_s",
 ]
 
 

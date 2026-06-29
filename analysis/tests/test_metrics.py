@@ -149,8 +149,12 @@ def test_detection_coverage(tmp_path):
     assert m["detection_coverage"] == pytest.approx(15 / 20)
 
 
-_CAM_C_COLS = ["cam_c_h_m", "joint_visibility_cam_c", "unique_contribution_cam_c",
+_CAM_C_COLS = ["cam_c_h_m", "cam_c_az_deg", "joint_visibility_cam_c",
+               "unique_contribution_cam_c",
                "convergence_ab_deg", "convergence_ac_deg", "convergence_bc_deg"]
+_TAG_COLS = ["tag_visibility_ratio", "detect_rate_cam_a", "detect_rate_cam_b",
+             "detect_rate_cam_c", "detect_rate_front", "detect_rate_back",
+             "longest_blind_gap_s"]
 
 
 def test_all_results_columns_present(tmp_path):
@@ -160,9 +164,9 @@ def test_all_results_columns_present(tmp_path):
     write_pred(pred)
     m = metrics.compute_metrics(str(gt), str(pred), META, h=1.5, r=2.5,
                                 rel_az_deg=90, cfg=CFG, mode="fusion")
-    # 2-cam mode: every column EXCEPT the 3-cam-only (overhead) ones is present.
+    # 2-cam mode: base columns present; cam-C and tag columns absent.
     for col in metrics.RESULTS_COLUMNS:
-        if col in _CAM_C_COLS:
+        if col in _CAM_C_COLS or col in _TAG_COLS:
             assert col not in m, f"2-cam row should not carry {col}"
         else:
             assert col in m, f"missing column {col}"
@@ -177,9 +181,35 @@ def test_overhead_adds_cam_c_columns(tmp_path):
     write_pred(pred)
     m = metrics.compute_metrics(str(gt), str(pred), META, h=1.5, r=2.5,
                                 rel_az_deg=90, cfg=CFG, mode="fusion", overhead_h=4.5)
-    for col in metrics.RESULTS_COLUMNS:
-        assert col in m, f"missing column {col}"     # 3-cam row carries them all
+    for col in _CAM_C_COLS:
+        assert col in m, f"overhead row missing {col}"
+    for col in _TAG_COLS:
+        assert col not in m, f"overhead row should not carry tag col {col}"
     assert m["cam_c_h_m"] == 4.5
+
+
+def test_unified_ring_cam_c_and_tags(tmp_path):
+    gt = tmp_path / "gt.csv"
+    pred = tmp_path / "pred.csv"
+    write_gt(gt)
+    write_pred(pred)
+    # synthetic tag-detection log: front tag seen by cam A every frame
+    tag = tmp_path / "tag.csv"
+    with open(tag, "w", newline="") as f:
+        import csv as _csv
+        w = _csv.writer(f)
+        w.writerow(["frame_idx", "wall_clock", "cam", "ids"])
+        for fi in range(1, 6):
+            w.writerow([fi, fi * 0.1, "A", "23"])
+    m = metrics.compute_metrics(str(gt), str(pred), META, h=1.5, r=2.5, rel_az_deg=90,
+                                cfg=CFG, mode="fusion", cam_c_az=90, tag_detect_csv=str(tag))
+    # convergence relations + cam-C geometry present (ring cam C)
+    for col in _CAM_C_COLS:
+        assert col in m, f"unified row missing geometry col {col}"
+    assert m["cam_c_az_deg"] == 90
+    # tag visibility folded in
+    assert m["tag_visibility_ratio"] == pytest.approx(1.0)
+    assert m["detect_rate_front"] == pytest.approx(1.0)
 
 
 def test_append_results_row(tmp_path):

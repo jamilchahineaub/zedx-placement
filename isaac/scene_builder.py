@@ -293,12 +293,16 @@ def _find_skeleton_prim(stage):
 # ---------------------------------------------------------------------------
 
 def build_scene(h, r, rel_az, subject_name, cfg, machine_cfg, cams="both",
-                overhead_h=None):
+                overhead_h=None, ring_c_az=None):
     """
     Boot Isaac, build the room, load the character, place the ZED cameras, and start
     streaming via ZEDAnnotators.
     Returns (app, stage, annotator_a, annotator_b, annotator_c) — annotator_c is None
-    unless overhead_h is set.
+    unless overhead_h or ring_c_az is set.
+
+    ring_c_az   : if set, place + stream a 3rd RING cam C at this azimuth (layout's h, r),
+                  aimed at chest height. For the ArUco tag-detection runs. Mutually exclusive
+                  with overhead_h.
 
     h, r        : ring camera height and radius (metres)
     rel_az      : cam B azimuth relative to cam A
@@ -390,6 +394,14 @@ def build_scene(h, r, rel_az, subject_name, cfg, machine_cfg, cams="both",
         R_c = camera_rig.rotation_matrix_from_look_at(pos_c, aim_c)
         _place_camera(stage, "/World/ZED_Camera_C", zed_usd, pos_c, R_c)
 
+    # 6c) Optional 3rd RING cam C at a given azimuth (tag-detection runs), aimed at chest height.
+    if ring_c_az is not None:
+        chest_h = (cfg.get("aruco", {}) or {}).get("chest_height_m", 1.3)
+        pos_c = camera_rig.camera_position(ring_c_az, r, h, subject_pos)
+        aim_rc = [subject_pos[0], subject_pos[1], subject_pos[2] + chest_h]
+        R_c = camera_rig.rotation_matrix_from_look_at(pos_c, aim_rc)
+        _place_camera(stage, "/World/ZED_Camera_C", zed_usd, pos_c, R_c)
+
     # 7) Render one frame so the camera render products exist before annotators.
     app.update()
 
@@ -428,7 +440,7 @@ def build_scene(h, r, rel_az, subject_name, cfg, machine_cfg, cams="both",
         )
 
     annotator_c = None
-    if overhead_h is not None:
+    if overhead_h is not None or ring_c_az is not None:
         prim_c = stage.GetPrimAtPath("/World/ZED_Camera_C")
         annotator_c = ZEDAnnotator(
             camera_prim=[prim_c.GetPath()],

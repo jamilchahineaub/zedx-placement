@@ -130,7 +130,9 @@ def is_valid_layout(h, r, cfg):
 def evaluate_layout(h, r, rel_az_deg, subject_pos, cfg,
                     machine="laptop", layout_id=None, subject_pos_name="center",
                     episode_duration=240.0, capture_duration=20.0,
-                    mode="fusion", overhead_h=None):
+                    mode="fusion", overhead_h=None,
+                    ring_c_az=None, detect_tags=False, spin_deg_s=None,
+                    marker_front=None, marker_back=None):
     """
     THE SWEEP BOUNDARY. sweep.py calls only this function.
 
@@ -177,21 +179,25 @@ def evaluate_layout(h, r, rel_az_deg, subject_pos, cfg,
               "--subject", " ".join(str(v) for v in subject_pos)]
     if overhead_h is not None:
         mk_cmd += ["--overhead-h", str(overhead_h)]
+    if ring_c_az is not None:
+        mk_cmd += ["--ring-c-az", str(ring_c_az)]
     subprocess.run(mk_cmd, cwd=repo, check=True, capture_output=True, text=True)
 
     proc, log_path = run_pipeline.launch_isaac(
         h, r, rel_az_deg, subject_pos_name, layout_id, machine, machine_cfg,
-        episode_duration, overhead_h=overhead_h)
+        episode_duration, overhead_h=overhead_h, ring_c_az=ring_c_az,
+        chest_tags=detect_tags, marker_front=marker_front, marker_back=marker_back,
+        spin_deg_s=spin_deg_s)
     try:
         expected = {cfg["cam_a"]["port"], cfg["cam_b"]["port"]}
-        if overhead_h is not None:
+        if overhead_h is not None or ring_c_az is not None:
             expected.add(cfg["cam_c"]["port"])
         run_pipeline.wait_for_streaming(log_path, proc, expected)
 
         if mode == "fusion":
             res = run_pipeline.run_zed_fusion(
                 fusion_cfg_path, layout_id, machine_cfg,
-                duration=capture_duration)
+                duration=capture_duration, detect_tags=detect_tags)
             pred_csv = res["csv"]
             meta_path = os.path.join(repo, "results", "layouts",
                                      f"zed_pred_{layout_id}_meta.json")
@@ -217,7 +223,10 @@ def evaluate_layout(h, r, rel_az_deg, subject_pos, cfg,
         with open(meta_path) as f:
             meta = json.load(f)
 
+    tag_detect_csv = (os.path.join(repo, "results", "layouts", f"tag_detect_{layout_id}.csv")
+                      if detect_tags else None)
     return metrics_mod.compute_metrics(
         gt_csv, pred_csv, meta, h, r, rel_az_deg, cfg,
         subject_pos=tuple(subject_pos), mode=mode,
-        subject_pos_name=subject_pos_name, overhead_h=overhead_h)
+        subject_pos_name=subject_pos_name, overhead_h=overhead_h,
+        cam_c_az=ring_c_az, tag_detect_csv=tag_detect_csv)

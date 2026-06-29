@@ -254,6 +254,17 @@ def apply_walk_path(stage, character_prim, skel_prim, cfg, cover_s=None):
         x, y = polyline_pos(pts, speed * (f / fps))
         op.Set(Gf.Vec3d(float(x - offx), float(y - offy), 0.0), Usd.TimeCode(f))
 
+    # Optional yaw: spin the root in place as it walks (order [translate, rotateZ] = rotate
+    # about the moving root). Default 0 -> no rotation, existing runs unchanged. Used by the
+    # tag-detection runs so the chest/back tags sweep through every facing.
+    spin_deg_s = float(wk.get("spin_deg_s", 0.0))
+    if spin_deg_s != 0.0:
+        rot = xform.AddRotateZOp()
+        for f in range(n_total + 1):
+            rot.Set(spin_deg_s * (f / fps), Usd.TimeCode(f))
+        print(f"character_motion: spinning at {spin_deg_s:.0f}°/s "
+              f"(360° every {360.0 / spin_deg_s:.1f}s)")
+
     stage.SetTimeCodesPerSecond(fps)
     stage.SetStartTimeCode(0)
     stage.SetEndTimeCode(n_total)

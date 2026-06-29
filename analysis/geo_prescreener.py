@@ -105,7 +105,7 @@ def _joint_convergence(cam_a, cam_b, joint):
 # ---------------------------------------------------------------------------
 
 def prescreen(cam_a_pos, cam_b_pos, joints, cfg, subject=(0.0, 0.0, 0.0),
-              cam_c_pos=None):
+              cam_c_pos=None, cam_c_aim=None):
     """
     Geometric VRST pre-screen of a two- (or three-) camera layout.
 
@@ -145,10 +145,10 @@ def prescreen(cam_a_pos, cam_b_pos, joints, cfg, subject=(0.0, 0.0, 0.0),
     R_a = cr.rotation_matrix_from_look_at(cam_a_pos, aim_point)
     R_b = cr.rotation_matrix_from_look_at(cam_b_pos, aim_point)
     has_c = cam_c_pos is not None
-    # The overhead camera aims straight down at the workspace centre, not at the
-    # (possibly off-centre) subject — match make_fusion_config's cam-C aim.
+    # cam-C aim: a RING cam C aims at the subject (cam_c_aim passed by the caller); a centered
+    # OVERHEAD cam C aims straight down at the workspace centre (default below the camera).
     if has_c:
-        aim_c = [cam_c_pos[0], cam_c_pos[1], subject[2] + aim_h]
+        aim_c = cam_c_aim if cam_c_aim is not None else [cam_c_pos[0], cam_c_pos[1], subject[2] + aim_h]
         R_c = cr.rotation_matrix_from_look_at(cam_c_pos, aim_c)
 
     n = len(joints)

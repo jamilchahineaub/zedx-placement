@@ -42,9 +42,11 @@ _MEAN_COLS = [
     "joint_visibility_either", "joint_visibility_both",
     "unique_contribution_cam_b", "jitter_variance", "id_drops",
     "convergence_angle_deg", "tilt_deg",
-    # 3-cam (overhead) geometry — NaN for 2-cam rows, carried so the ranking can surface them.
+    # 3-cam geometry — NaN for 2-cam rows, carried so the ranking can surface them.
     "convergence_ab_deg", "convergence_ac_deg", "convergence_bc_deg",
     "joint_visibility_cam_c", "unique_contribution_cam_c",
+    # unified tag-detection metrics.
+    "tag_visibility_ratio", "detect_rate_cam_c", "longest_blind_gap_s",
 ]
 
 
@@ -108,21 +110,23 @@ def aggregate_by_layout(rows, subject=None):
     (NaN-aware mean; plus mpjpe_worst and coverage_min for worst-case checks)."""
     if subject is not None:
         rows = [r for r in rows if r.get("subject_pos_name") == subject]
-    # Treat the overhead camera height as part of the layout identity only if the
-    # results file actually carries it (2-cam CSVs have no cam_c_h_m -> behaves as before).
-    has_cam_c = any(not _isnan(r.get("cam_c_h_m", NAN)) for r in rows)
+    # The cam-C placement is part of the layout identity ONLY when the file carries it, so each
+    # overhead height (cam_c_h_m) or ring azimuth (cam_c_az_deg) ranks as its own 3-cam layout.
+    # 2-cam CSVs have neither -> behaves exactly as before.
+    extra_cols = [c for c in ("cam_c_h_m", "cam_c_az_deg")
+                  if any(not _isnan(r.get(c, NAN)) for r in rows)]
     groups = {}
     for r in rows:
         key = (round(r["h_m"], 6), round(r["r_m"], 6), round(r["rel_az_deg"], 6))
-        if has_cam_c:
-            cc = r.get("cam_c_h_m", NAN)
-            key = key + (round(cc, 6) if not _isnan(cc) else None,)
+        for c in extra_cols:
+            v = r.get(c, NAN)
+            key = key + (round(v, 6) if not _isnan(v) else None,)
         groups.setdefault(key, []).append(r)
     layouts = []
     for key, grp in groups.items():
         agg = {"h_m": key[0], "r_m": key[1], "rel_az_deg": key[2], "n_subjects": len(grp)}
-        if has_cam_c:
-            agg["cam_c_h_m"] = key[3]
+        for i, c in enumerate(extra_cols):
+            agg[c] = key[3 + i]
         agg["mpjpe_mm"] = _nanmean([g.get("mpjpe_mm", NAN) for g in grp])
         agg["mpjpe_worst"] = _nanmax([g.get("mpjpe_mm", NAN) for g in grp])
         agg["coverage_min"] = _nanmin([g.get("detection_coverage", NAN) for g in grp])
@@ -323,6 +327,9 @@ def layout_label(lay):
     cc = lay.get("cam_c_h_m")
     if cc is not None and not _isnan(cc):
         base += f" oh{_fmt(cc)}"
+    ca = lay.get("cam_c_az_deg")
+    if ca is not None and not _isnan(ca):
+        base += f" oc{int(round(ca))}"
     return base
 
 
@@ -450,18 +457,18 @@ def write_csv(path, ranked):
     os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
     axis_cols = ["pose_fidelity", "absolute_placement", "stability"]
     # Include cam_c_h_m only if any ranked layout carries it (3-cam results).
-    cam_c_cols = ["cam_c_h_m"] if any(
-        r.get("cam_c_h_m") is not None and not _isnan(r.get("cam_c_h_m")) for r in ranked) else []
-    # Pairwise convergence angles only exist for 3-cam rows — surface them when present.
-    conv_pair_cols = ["convergence_ab_deg", "convergence_ac_deg", "convergence_bc_deg"] if any(
-        r.get("convergence_ab_deg") is not None and not _isnan(r.get("convergence_ab_deg"))
-        for r in ranked) else []
+    def _present(col):
+        return [col] if any(r.get(col) is not None and not _isnan(r.get(col)) for r in ranked) else []
+    cam_c_cols = _present("cam_c_h_m") + _present("cam_c_az_deg")
+    conv_pair_cols = (["convergence_ab_deg", "convergence_ac_deg", "convergence_bc_deg"]
+                      if _present("convergence_ab_deg") else [])
+    tag_cols = _present("tag_visibility_ratio") + _present("longest_blind_gap_s")
     cols = (["rank", "h_m", "r_m", "rel_az_deg"] + cam_c_cols
             + ["score", "valid", "flag_reason", "pareto"]
             + axis_cols
             + ["mpjpe_aligned_mm", "mpjpe_mm", "registration_offset_mm",
                "id_drops", "jitter_variance", "joint_visibility_both",
-               "convergence_angle_deg"] + conv_pair_cols + ["tilt_deg", "n_subjects"])
+               "convergence_angle_deg"] + conv_pair_cols + tag_cols + ["tilt_deg", "n_subjects"])
     with open(path, "w", newline="") as f:
         w = csv.writer(f)
         w.writerow(cols)

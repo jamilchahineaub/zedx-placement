@@ -119,6 +119,26 @@ zed_x:
 triangulable_min_deg: 40
 triangulable_max_deg: 140
 
+# --- Chest ArUco tag visibility (analysis/tag_visibility.py, scripts/sweep_tag.py) ---
+# A third ring camera's job is to keep a chest-mounted ArUco tag DECODABLE as the robot
+# moves and turns. A tag is directional: it only reads when a camera is in front of it,
+# within the decode-angle cone of its normal, and close enough. Pure-geometry test over
+# the workspace (every floor cell x every facing) — no Isaac. cam C is azimuth-only on the
+# same ring (it inherits each layout's height/radius); only its angle is swept.
+aruco:
+  tag_size_m:           0.15    # marker side length (for the decodable-range estimate)
+  chest_height_m:       1.30    # tag height above the floor
+  decode_max_deg:       60.0    # max angle between tag normal and camera ray that still decodes
+  max_decode_range_m:   6.0     # beyond this the tag is too small in pixels to decode (HD1080, tunable)
+  facing_step_deg:      15      # robot-facing sweep step (360/15 = 24 directions)
+  cam_c_azimuth_step_deg: 15    # cam C azimuth sweep step on the ring (360/15 = 24 candidates)
+  # Real-detection runs (render two tags into the ZED stream, decode with cv2.aruco):
+  tag_offset_m:         0.30    # metres to push each tag off the chest joint to clear the torso
+  render_tag_size_m:    0.30    # marker side rendered in-sim (bigger than real 0.15 for decodability)
+  marker_dict:          DICT_6X6_250
+  marker_id_front:      23      # chest tag ArUco id
+  marker_id_back:       42      # back tag ArUco id
+
 # --- ZED Camera Helper OmniGraph node (Phase 1, verified from ext .ogn source) ---
 # Node whose uiName is "ZED Camera Helper". 2-cam port-based variant (matches test.usd).
 # Source: exts/sl.sensor.camera/sl/sensor/camera/nodes/SlCameraStreamer.ogn

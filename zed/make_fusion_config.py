@@ -193,7 +193,8 @@ def camera_position(azimuth_deg, radius, height, subject=(0.0, 0.0, 0.0)):
 
 def generate(template_path, out_path, h, r, rel_az_deg,
              subject_pos=(0.0, 0.0, 0.0), aim_height_m=1.0,
-             cam_a_az=0, overhead_h=None, overhead_center=(0.0, 0.0)):
+             cam_a_az=0, overhead_h=None, overhead_center=(0.0, 0.0),
+             ring_c_az=None, ring_c_aim_h=None):
     """
     h             : height of both ring cameras in metres
     r             : radius of both ring cameras from subject in metres
@@ -233,7 +234,16 @@ def generate(template_path, out_path, h, r, rel_az_deg,
     # workspace centre at aim height; the look-at fallback (up=+Y) handles the
     # vertical forward vector. Removed entirely for plain 2-cam configs.
     pos_c = None
-    if overhead_h is not None:
+    if ring_c_az is not None:
+        # Ring cam C at the layout's (h, r), aimed at chest height — MUST match the cam-C
+        # placement in scene_builder.build_scene(ring_c_az=...) for a correct fusion pose.
+        aim_h_c = aim_height_m if ring_c_aim_h is None else ring_c_aim_h
+        pos_c = camera_position(ring_c_az, r, h, subject_pos)
+        aim_c = [subject_pos[0], subject_pos[1], subject_pos[2] + aim_h_c]
+        R_c = proper_rotation_world_from_cam(pos_c, aim_c)
+        zpos_c, zR_c = convert_isaac_to_zed_pose(pos_c, R_c)
+        cfg["1003"]["FusionConfiguration"]["pose"] = make_pose_string(zpos_c, zR_c)
+    elif overhead_h is not None:
         pos_c = [overhead_center[0], overhead_center[1], float(overhead_h)]
         aim_c = [overhead_center[0], overhead_center[1], subject_pos[2] + aim_height_m]
         R_c = proper_rotation_world_from_cam(pos_c, aim_c)
@@ -275,6 +285,8 @@ if __name__ == "__main__":
     parser.add_argument("--overhead-h", type=float, default=None,
                         help="if set, also write cam C (serial 1003) as a centered "
                              "nadir camera at this height over the workspace centre")
+    parser.add_argument("--ring-c-az", type=float, default=None,
+                        help="if set, write cam C (1003) as a RING camera at this azimuth")
     parser.add_argument("--experiment", default="config/experiment.yaml")
     args = parser.parse_args()
 
@@ -301,6 +313,8 @@ if __name__ == "__main__":
         cam_a_az      = cam_a_az,
         overhead_h    = args.overhead_h,
         overhead_center = (float(center[0]), float(center[1])),
+        ring_c_az     = args.ring_c_az,
+        ring_c_aim_h  = (cfg.get("aruco", {}) or {}).get("chest_height_m", 1.3),
     )
 
     print_layout(info, args.h, args.r, args.rel_az)

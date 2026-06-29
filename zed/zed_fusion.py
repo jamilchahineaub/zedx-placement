@@ -64,11 +64,27 @@ def main():
     ap.add_argument("--first-frame-timeout", type=float, default=20.0)
     ap.add_argument("--open-timeout", type=float, default=30.0)
     ap.add_argument("--machine", default="laptop")
+    ap.add_argument("--detect-tags", action="store_true",
+                    help="also run cv2.aruco on each camera's LEFT image -> tag_detect CSV")
+    ap.add_argument("--tag-stride", type=int, default=1,
+                    help="run tag detection every Nth grabbed frame (1 = every frame)")
     args = ap.parse_args()
 
     with open(os.path.join(REPO, "config", "experiment.yaml")) as f:
         cfg = yaml.safe_load(f)
     serial_to_port = _serial_to_port(cfg)
+    port_to_name = {int(cfg[f"cam_{n}"]["port"]): n.upper() for n in ("a", "b", "c")
+                    if cfg.get(f"cam_{n}") and "port" in cfg[f"cam_{n}"]}
+
+    # Optional ArUco tag detection on each camera's LEFT image (unified 3-cam run).
+    aruco_dict = aruco_params = None
+    serial_to_name = {}            # runtime_serial -> "A"/"B"/"C" (filled during open)
+    tag_rows = []                  # (frame_idx, wall, cam, ids)
+    if args.detect_tags:
+        import cv2
+        aru = cfg.get("aruco") or {}
+        aruco_dict = cv2.aruco.Dictionary_get(getattr(cv2.aruco, aru.get("marker_dict", "DICT_6X6_250")))
+        aruco_params = cv2.aruco.DetectorParameters_create()
 
     confs = sl.read_fusion_configuration_file(
         args.fusion_config, sl.COORDINATE_SYSTEM.RIGHT_HANDED_Y_UP, sl.UNIT.METER)
@@ -112,8 +128,9 @@ def main():
                 z.close()
             sys.exit(1)
         runtime_serial = zed.get_camera_information().serial_number
+        serial_to_name[runtime_serial] = port_to_name.get(port, str(port))
         print(f"zed_fusion: config serial {conf.serial_number} -> port {port} "
-              f"-> runtime serial {runtime_serial}", flush=True)
+              f"-> runtime serial {runtime_serial} (cam {serial_to_name[runtime_serial]})", flush=True)
         if runtime_serial in senders:
             print("RUN_FAILED duplicate_serials — both stream cameras report "
                   f"serial {runtime_serial}; switch scene_builder annotators to "
@@ -190,6 +207,7 @@ def main():
     state = {"frames": 0, "frames_with_bodies": 0, "stream_dead": False}
     per_cam = sl.Bodies()
     fused = sl.Bodies()
+    tag_img = sl.Mat()
 
     watchdog_stop = threading.Event()
 
@@ -216,9 +234,20 @@ def main():
         while True:
             if time.time() - start >= args.duration or state["stream_dead"]:
                 break
-            for zed in senders.values():
+            detect_now = args.detect_tags and (state["frames"] % max(1, args.tag_stride) == 0)
+            tag_wall = time.time()
+            for rserial, zed in senders.items():
                 if zed.grab() <= sl.ERROR_CODE.SUCCESS:
                     zed.retrieve_bodies(per_cam)
+                    if detect_now:
+                        import cv2
+                        zed.retrieve_image(tag_img, sl.VIEW.LEFT)
+                        gray = cv2.cvtColor(tag_img.get_data(), cv2.COLOR_BGRA2GRAY)
+                        _, ids, _ = cv2.aruco.detectMarkers(gray, aruco_dict, parameters=aruco_params)
+                        idlist = [] if ids is None else [int(i) for i in ids.flatten()]
+                        tag_rows.append((state["frames"] + 1, tag_wall,
+                                         serial_to_name.get(rserial, str(rserial)),
+                                         " ".join(str(i) for i in idlist)))
             if fusion.process() != sl.FUSION_ERROR_CODE.SUCCESS:
                 continue
             fusion.retrieve_bodies(fused, rt)
@@ -276,6 +305,16 @@ def main():
         with open(os.path.join(REPO, "results", "layouts",
                                f"zed_pred_{args.layout_id}_meta.json"), "w") as f:
             json.dump(meta, f, indent=2)
+        # ArUco tag detections (unified run) — same schema as zed_tag_detect for tag_metrics.
+        if args.detect_tags:
+            tag_out = os.path.join(REPO, "results", "layouts",
+                                   f"tag_detect_{args.layout_id}.csv")
+            with open(tag_out, "w", newline="") as f:
+                w = csv.writer(f)
+                w.writerow(["frame_idx", "wall_clock", "cam", "ids"])
+                for fi, wall_c, cam, ids in tag_rows:
+                    w.writerow([fi, f"{wall_c:.6f}", cam, ids])
+            print(f"zed_fusion: wrote {len(tag_rows)} tag rows -> {tag_out}", flush=True)
         print(f"zed_fusion: wrote {len(rows)} rows -> {out}")
         print(f"ZED_SUMMARY frames={state['frames']} "
               f"frames_with_bodies={state['frames_with_bodies']} rows={len(rows)}",

@@ -47,6 +47,14 @@ def main():
     ap.add_argument("--overhead-h", type=float, default=None,
                     help="if set, also stream a centered overhead (nadir) cam C at "
                          "this height over the workspace centre")
+    ap.add_argument("--ring-c-az", type=float, default=None,
+                    help="if set, stream a 3rd RING cam C at this azimuth (tag-detection runs)")
+    ap.add_argument("--chest-tags", action="store_true",
+                    help="render two ArUco tags (chest + back) on the character")
+    ap.add_argument("--marker-front", default=None, help="ArUco PNG for the chest tag")
+    ap.add_argument("--marker-back", default=None, help="ArUco PNG for the back tag")
+    ap.add_argument("--spin-deg-s", type=float, default=None,
+                    help="override walk.spin_deg_s for this run (deg/s)")
     ap.add_argument("--transport", choices=["BOTH", "NETWORK", "IPC"], default=None,
                     help="override zed_stream.transport from experiment.yaml")
     args = ap.parse_args()
@@ -57,6 +65,9 @@ def main():
     if args.transport:
         cfg.setdefault("zed_stream", {})["transport"] = args.transport
         print(f"run_episode: transport override -> {args.transport}")
+    if args.spin_deg_s is not None:
+        cfg.setdefault("walk", {})["spin_deg_s"] = args.spin_deg_s
+        print(f"run_episode: spin override -> {args.spin_deg_s} deg/s")
 
     # 2) Validity gate (pure math, no Isaac needed) — do it BEFORE booting Isaac.
     import camera_rig
@@ -70,7 +81,7 @@ def main():
     try:
         app, stage, annotator_a, annotator_b, annotator_c = scene_builder.build_scene(
             args.h, args.r, args.rel_az, args.subject_name, cfg, machine_cfg,
-            cams=args.cams, overhead_h=args.overhead_h,
+            cams=args.cams, overhead_h=args.overhead_h, ring_c_az=args.ring_c_az,
         )
     except Exception as e:
         print(f"RUN_FAILED build_scene raised: {e}")
@@ -81,6 +92,24 @@ def main():
     from gt_logger import GTLogger
 
     logger = GTLogger(stage)
+
+    # 4b) Optional ArUco chest+back tags, pinned to the skeleton each frame (reuse logger's
+    #     skel_query). They render into the ZED streams; zed/zed_tag_detect.py decodes them.
+    tags = tag_li = tag_ri = tag_ci = None
+    tag_offset = 0.3
+    if args.chest_tags:
+        import tag_utils as tu
+        aru = cfg.get("aruco") or {}
+        tsize = float(aru.get("render_tag_size_m", 0.30))
+        tag_offset = float(aru.get("tag_offset_m", 0.30))
+        tag_li, tag_ri, tag_ci = tu.find_joints(logger.joint_names)
+        if None in (tag_li, tag_ri, tag_ci):
+            print("run_episode: WARNING could not find shoulder/chest joints — tags disabled")
+        else:
+            tags = (tu.create_tag_quad(stage, args.marker_front, tsize, "Front"),
+                    tu.create_tag_quad(stage, args.marker_back, tsize, "Back"))
+            print(f"run_episode: chest+back tags on L={logger.joint_names[tag_li]} "
+                  f"R={logger.joint_names[tag_ri]} chest={logger.joint_names[tag_ci]}")
 
     # Stage timecodes/sec — needed to convert seconds -> USD timecode for joint sampling.
     tcps = stage.GetTimeCodesPerSecond() or 60.0
@@ -103,6 +132,10 @@ def main():
             timecode = sim_seconds * tcps
             # log_frame samples joints at the given USD timecode; sim_seconds stored in CSV.
             logger.log_frame_at(sim_seconds, time.time(), timecode)
+            if tags is not None:
+                import tag_utils as tu
+                tu.pin_two_tags(logger.skel_query, tag_li, tag_ri, tag_ci,
+                                tags, tag_offset, timecode)
     except Exception as e:
         print(f"RUN_FAILED tick loop raised: {e}")
         timeline.stop()
